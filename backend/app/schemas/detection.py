@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class DetectionRequest(BaseModel):
     image_id: str
+    mode: Literal["real", "simulated"] = "real"
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
@@ -16,5 +17,5 @@ class DetectionResult(BaseModel):
 
 class DetectionResponse(BaseModel):
     image_id: str
-    mode: Literal["simulated"]
+    mode: Literal["real", "simulated"]
     detections: list[DetectionResult]

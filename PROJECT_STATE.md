@@ -6,14 +6,14 @@ Last updated: 2026-04-27
 
 This repository is a monorepo scaffold for a drone imagery semantic segmentation platform. The intended product is a web workspace where users can view drone imagery on a map, upload imagery, run model inference, and visualize object detection or segmentation results.
 
-Current implementation is an early scaffold. It has a working FastAPI backend, a working Next.js frontend, a backend health check, CORS configuration, a local image registry, static image serving, and a Leaflet map viewer that renders registered drone imagery as a georeferenced image overlay.
+Current implementation is an early scaffold with a working FastAPI backend, a working Next.js frontend, a backend health check, CORS configuration, a local image registry, static image serving, and a Leaflet map viewer that renders registered drone imagery as a georeferenced image overlay. Detection now supports both simulated results and real SegFormer semantic segmentation results converted into bounding boxes.
 
 ## Tech Stack
 
 - Frontend: Next.js 15, React 19, TypeScript, Tailwind CSS, Leaflet, React-Leaflet
 - Backend: FastAPI, Python, Pydantic Settings, Uvicorn
-- ML dependencies already listed: Torch, HuggingFace Transformers, Pillow, NumPy
-- Target model direction: SegFormer from HuggingFace
+- ML dependencies: Torch, HuggingFace Transformers, Pillow, NumPy, OpenCV headless
+- Model: HuggingFace SegFormer `nvidia/segformer-b0-finetuned-ade-512-512`
 - Current visualization direction: bounding boxes first, segmentation masks later
 
 ## Repository Structure
@@ -32,6 +32,7 @@ Current implementation is an early scaffold. It has a working FastAPI backend, a
 |   |   +-- schemas/images.py
 |   |   +-- schemas/health.py
 |   |   +-- services/image_registry.py
+|   |   +-- services/segformer_detection.py
 |   |   +-- services/simulated_detection.py
 |   |   +-- main.py
 |   +-- static/
@@ -53,6 +54,8 @@ Current implementation is an early scaffold. It has a working FastAPI backend, a
 |   +-- package.json
 +-- model/
 |   +-- README.md
+|   +-- __init__.py
+|   +-- segformer_service.py
 +-- README.md
 +-- PROJECT_STATE.md
 ```
@@ -125,12 +128,32 @@ Detection API state:
 - Route module: `backend/app/api/routes/detect.py`
 - Pydantic request/response models: `backend/app/schemas/detection.py`
 - Detection service: `backend/app/services/simulated_detection.py`
-- `POST /api/detect` accepts `image_id` and `confidence_threshold`.
+- Real detection wrapper: `backend/app/services/segformer_detection.py`
+- SegFormer inference service: `model/segformer_service.py`
+- `POST /api/detect` accepts `image_id`, `mode`, and `confidence_threshold`.
+- `mode` is constrained to `"real"` or `"simulated"` and defaults to `"real"`.
 - The route validates `image_id` through the image registry and returns `404` for unknown image IDs.
 - The request model constrains `confidence_threshold` to `0.0` through `1.0`.
-- Detection mode is currently always `"simulated"`.
+- The response mode is `"real"` or `"simulated"`, matching the request path used.
 - Simulated detections include `building`, `vegetation`, `open_land`, and `road/path`.
 - Simulated detections are filtered by `confidence_threshold`.
+- Real detection lazy-loads SegFormer on first real request.
+- Real detection uses CPU by default when CUDA is unavailable.
+- Real detection loads `nvidia/segformer-b0-finetuned-ade-512-512` through HuggingFace Transformers.
+- Real detection maps useful ADE classes into readable labels: `building`, `vegetation`, `road`, and `earth/ground`.
+- Real detection converts segmentation masks into bounding boxes with OpenCV contour extraction.
+- Real detection returns the existing detection shape:
+
+```json
+{
+  "label": "building",
+  "confidence": 0.87,
+  "bbox": [0, 0, 128, 128]
+}
+```
+
+- Model-loading and inference failures are surfaced as `503` responses with clear error messages.
+- Real detection scales returned bounding boxes to the registered image dimensions so the existing map overlay contract remains stable.
 
 Backend settings are in `backend/app/core/config.py`.
 
@@ -141,7 +164,7 @@ Backend settings are in `backend/app/core/config.py`.
 
 Backend dependencies are pinned in `backend/requirements.txt`.
 
-Important current limitation: the backend does not yet load a model, run real inference, or persist uploaded-file metadata beyond the local static replacement image. The only registry record currently available is `drone_image_001`, and detection responses are simulated.
+Important current limitation: the backend still does not persist uploaded-file metadata beyond the local static replacement image. The only registry record currently available is `drone_image_001`. Real detection works, but the first run requires downloading the HuggingFace model unless it already exists in the local model cache.
 
 ## Frontend State
 
@@ -153,7 +176,7 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 - Calls the backend health endpoint on mount through `getHealth()`.
 - Calls the backend image registry endpoint on mount through `getImages()`.
 - Uploads a replacement drone image through `uploadDroneImage()`.
-- Runs simulated detection through `runDetection()`.
+- Runs real SegFormer detection through `runDetection()` by default.
 - Shows backend online/offline state in the header.
 - Shows an image workflow sidebar with available registered images.
 - Shows an upload control that replaces the current demo image.
@@ -167,6 +190,7 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 - Shows clean loading, error, and empty-image states for the image registry.
 - Shows a right-side image details panel with `image_id`, image size, and image bounds.
 - Shows detection results in the right-side panel with label, confidence, and pixel bbox.
+- Displays detection status messages that include the response mode.
 
 `frontend/components/MapViewport.tsx` is a client map component that:
 
@@ -175,7 +199,7 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 - Loads OpenStreetMap tiles.
 - Renders the selected registered drone image with Leaflet `ImageOverlay`.
 - Converts backend bounds into Leaflet bounds using southwest and northeast corners.
-- Converts simulated pixel bboxes from `[x_min, y_min, x_max, y_max]` into Leaflet geographic rectangles using image width, height, and bounds.
+- Converts detection pixel bboxes from `[x_min, y_min, x_max, y_max]` into Leaflet geographic rectangles using image width, height, and bounds.
 - Accounts for top-left image pixel origin by mapping `y=0` to the image north edge.
 - Renders detections as Leaflet `Rectangle` overlays aligned to the raster image.
 - Shows detection label and confidence in rectangle tooltip/popup UI.
@@ -192,6 +216,8 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 - Exposes typed image metadata models and `getImages()` for `GET /api/images`.
 - Exposes `uploadDroneImage()` for multipart `POST /api/images`.
 - Exposes typed detection models and `runDetection()` for `POST /api/detect`.
+- Detection response mode type is `"real" | "simulated"`.
+- `runDetection()` accepts an optional mode and sends `"real"` by default.
 
 The local frontend env file currently has:
 
@@ -203,7 +229,23 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 `model/README.md` says the directory is reserved for SegFormer assets, checkpoints, and model-facing documentation.
 
-No model files, checkpoints, training scripts, inference code, or model service layer are implemented yet.
+Current model-facing files:
+
+- `model/__init__.py`
+- `model/segformer_service.py`
+
+`model/segformer_service.py`:
+
+- Defines the SegFormer model name as `nvidia/segformer-b0-finetuned-ade-512-512`.
+- Lazy-loads `SegformerImageProcessor` and `SegformerForSemanticSegmentation`.
+- Uses `cuda` when available and CPU otherwise.
+- Runs semantic segmentation with Torch no-grad inference.
+- Maps raw class IDs to useful readable labels.
+- Extracts contours with OpenCV and converts mask regions into bounding boxes.
+- Keeps only boxes above the requested confidence threshold.
+- Stores HuggingFace model files in `model/.cache/huggingface`.
+
+`model/.cache/` is ignored by git and may contain downloaded HuggingFace artifacts on local machines.
 
 ## How To Run Locally
 
@@ -233,6 +275,24 @@ Expected local URLs:
 - Static sample image: `http://localhost:8000/static/images/drone_001.jpg`
 - Backend docs: `http://localhost:8000/docs`
 
+Detection examples:
+
+```json
+{
+  "image_id": "drone_image_001",
+  "mode": "real",
+  "confidence_threshold": 0.5
+}
+```
+
+```json
+{
+  "image_id": "drone_image_001",
+  "mode": "simulated",
+  "confidence_threshold": 0.5
+}
+```
+
 ## Implemented
 
 - Monorepo structure with `frontend`, `backend`, and `model`.
@@ -240,6 +300,8 @@ Expected local URLs:
 - Health response schema.
 - `GET /` and `GET /health`.
 - `POST /api/detect` simulated detection endpoint.
+- `POST /api/detect` real SegFormer detection mode.
+- `POST /api/detect` `mode` field with `"real"` and `"simulated"` support.
 - `GET /api/images` image registry endpoint.
 - `POST /api/images` replacement image upload endpoint.
 - `GET /api/images/{image_id}` image lookup endpoint with `404` handling.
@@ -247,6 +309,9 @@ Expected local URLs:
 - Pydantic detection request and response schemas.
 - Local image registry service.
 - Simulated detection service with registry validation and confidence filtering.
+- SegFormer detection wrapper service with registry validation and service error mapping.
+- SegFormer model service with lazy model loading, CPU-safe execution, ADE label mapping, confidence filtering, and OpenCV contour-to-bbox extraction.
+- Clear `503` API errors when SegFormer loading or inference fails.
 - Static file serving at `/static`.
 - One registered sample drone image: `drone_image_001`.
 - Backend CORS support.
@@ -254,7 +319,7 @@ Expected local URLs:
 - Frontend health check against the backend.
 - Frontend image registry fetch through `GET /api/images`.
 - Frontend drone image upload that replaces `backend/static/images/drone_001.jpg`.
-- Frontend simulated detection request through `POST /api/detect`.
+- Frontend real detection request through `POST /api/detect` by default, with typed support for simulated mode.
 - Dashboard layout with backend status display.
 - Image selector for registered backend images.
 - Detection controls with confidence threshold, loading spinner, run button, and clear results button.
@@ -264,27 +329,26 @@ Expected local URLs:
 - Leaflet map viewport.
 - OpenStreetMap basemap.
 - Leaflet `ImageOverlay` rendering of the selected drone image.
-- Leaflet `Rectangle` overlays for simulated detection bounding boxes.
+- Leaflet `Rectangle` overlays for detection bounding boxes.
 - Pixel-to-map bbox conversion aligned to the image raster bounds.
 - Map auto-fit to backend-provided image bounds.
 - Leaflet zoom controls positioned at the top-right.
 - Boxes metric based on current detection results.
 - Placeholder metric for `Masks`.
+- `.gitignore` excludes `model/.cache/` so downloaded model artifacts are not committed.
 
 ## Not Implemented Yet
 
 - Multiple image upload records.
 - User-uploaded file metadata persistence beyond replacing the local static image.
-- Model loading.
-- SegFormer inference.
-- Real detection endpoint.
 - Segmentation endpoint.
-- Real model-generated bounding box data.
 - Segmentation mask rendering.
 - Result history.
 - Database.
 - Authentication.
 - Tests.
+- Frontend UI selector for switching between `real` and `simulated` modes.
+- Configurable model/cache settings through backend environment variables.
 
 ## Good Next Tasks
 
@@ -292,8 +356,10 @@ Recommended next implementation steps:
 
 1. Add tests for health, image registry responses, upload validation, unknown image IDs, static serving, simulated detection filtering, frontend image loading states, and prediction response formatting.
 2. Add configurable map bounds for uploaded images instead of reusing the default sample bounds.
-3. Add real model loading and SegFormer inference only after the metadata-to-visualization path works end to end.
+3. Add frontend controls for choosing real versus simulated mode.
 4. Add segmentation mask response models and frontend mask rendering after the bounding box flow is stable.
+5. Add backend configuration for model name, local cache path, max boxes per label, and minimum contour area.
+6. Add automated tests for real-mode error handling with model loading mocked.
 
 ## Notes For A New Chat
 
@@ -303,13 +369,25 @@ The project is currently in scaffold stage. The main architectural intent is:
 
 - Keep FastAPI routes thin.
 - Keep local image metadata in the registry service until a real database is introduced.
-- Put future model loading and inference in a dedicated backend service layer.
+- Keep model loading and inference in the dedicated model/backend service layers.
 - Use typed schemas for all API responses.
 - Keep the frontend map component focused on visualization.
 - Keep API calls in `frontend/lib/api.ts`.
 - Registered image metadata now drives the frontend map overlay through `/api/images`.
-- Simulated detection now exists at `/api/detect` and renders as map-aligned frontend rectangle overlays.
-- Replace simulated detection with real model inference only after preserving the current API and overlay contract.
+- `/api/detect` now supports both real SegFormer mode and simulated fallback mode.
+- Real SegFormer detection preserves the current API and overlay contract by returning bounding boxes in registered image pixel coordinates.
+- Segmentation masks are still backend-internal only; the API returns boxes, not mask payloads.
+
+## Verification Notes
+
+Recent checks after SegFormer integration:
+
+- Backend compile check passed with `.venv\Scripts\python.exe -m compileall app ..\model`.
+- Frontend TypeScript check passed with `.\node_modules\.bin\tsc.cmd --noEmit`.
+- Simulated route dispatch returned expected filtered detections.
+- Real SegFormer inference ran successfully for `drone_image_001` and returned model-generated detections.
+- `npm run lint` did not complete because this Next.js project has no ESLint config yet and `next lint` opened an interactive setup prompt.
+- Git status could not be checked from the sandbox because Git reported this repository as a dubious ownership directory.
 
 ## Git Note
 

@@ -200,7 +200,7 @@ export function Dashboard() {
 
     setDetectionState({
       status: "running",
-      message: "Running simulated detection"
+      message: "Running SegFormer detection"
     });
 
     try {
@@ -211,7 +211,7 @@ export function Dashboard() {
       setDetections(response.detections);
       setDetectionState({
         status: "success",
-        message: `${response.detections.length} detections found`
+        message: `${response.detections.length} ${response.mode} detections found`
       });
     } catch (error: unknown) {
       setDetectionState({
@@ -544,7 +544,7 @@ function DetectionResults({
       </div>
       {state.status === "idle" && detections.length === 0 ? (
         <p className="mt-3 rounded border border-line bg-slate-50 p-3 text-sm text-muted">
-          Run detection to show simulated bounding boxes.
+          Run detection to show SegFormer bounding boxes.
         </p>
       ) : null}
       {state.status === "running" ? (

@@ -20,3 +20,5 @@ out/
 .mypy_cache/
 .ruff_cache/
 
+# Model artifacts
+model/.cache/

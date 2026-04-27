@@ -31,7 +31,7 @@ export type Detection = {
 
 export type DetectionResponse = {
   image_id: string;
-  mode: "simulated";
+  mode: "real" | "simulated";
   detections: Detection[];
 };
 
@@ -87,10 +87,12 @@ export async function uploadDroneImage(file: File): Promise<ImageMetadata> {
 
 export async function runDetection({
   imageId,
-  confidenceThreshold
+  confidenceThreshold,
+  mode = "real"
 }: {
   imageId: string;
   confidenceThreshold: number;
+  mode?: "real" | "simulated";
 }): Promise<DetectionResponse> {
   const response = await fetch(`${API_BASE_URL}/api/detect`, {
     method: "POST",
@@ -100,6 +102,7 @@ export async function runDetection({
     },
     body: JSON.stringify({
       image_id: imageId,
+      mode,
       confidence_threshold: confidenceThreshold
     }),
     cache: "no-store"
