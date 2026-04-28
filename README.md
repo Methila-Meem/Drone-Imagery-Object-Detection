@@ -268,13 +268,25 @@ YOLOv8s is an object detector, not a semantic segmentation model. Its overlay is
 
 ## Screenshots
 
-Add screenshots to the repository later and update these placeholders:
+### Dashboard Map
 
-- `screenshots/dashboard-map.png`
-- `screenshots/segformer-results.png`
-- `screenshots/yolov8-results.png`
-- `screenshots/geojson-export.png`
-- `screenshots/mask-overlay-toggle.png`
+![Dashboard map with drone raster overlay](screenshots/dashboard-map.png)
+
+### SegFormer Results
+
+![SegFormer detection results with segmentation mask](screenshots/segformer-results.png)
+
+### YOLOv8s Results
+
+![YOLOv8s detection results with bbox overlay](screenshots/yolov8-results.png)
+
+### GeoJSON Export
+
+![GeoJSON export workflow](screenshots/geojson-export.png)
+
+### Mask Overlay Toggle
+
+![Mask overlay toggle in the map workflow](screenshots/mask-overlay-toggle.png)
 
 ## Limitations
 
