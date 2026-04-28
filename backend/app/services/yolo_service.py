@@ -4,7 +4,10 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from PIL import Image, ImageOps
+
 from app.schemas.detection import DetectionResponse, DetectionResult
+from app.services.bbox_utils import non_max_suppression
 from app.services.image_registry import STATIC_IMAGES_DIR, UnknownImageError, get_image
 from app.services.overlay_utils import (
     build_detection_overlay,
@@ -18,8 +21,51 @@ YOLO_MODEL_NAME = "yolov8s.pt"
 YOLO_IMAGE_SIZE = 1024
 YOLO_IOU_THRESHOLD = 0.45
 YOLO_MAX_DETECTIONS = 300
+YOLO_TILE_SIZE = 1024
+YOLO_TILE_OVERLAP = 0.2
 YOLO_CACHE_DIR = Path(__file__).resolve().parents[3] / "model" / ".cache" / "ultralytics"
 MPL_CONFIG_DIR = Path(__file__).resolve().parents[3] / "model" / ".cache" / "matplotlib"
+
+YOLO_SUPPRESSED_LABELS = {
+    "bench",
+    "potted plant",
+    "chair",
+    "couch",
+    "bed",
+    "dining table",
+    "toilet",
+    "sink",
+    "vase",
+    "handbag",
+    "tie",
+    "suitcase",
+    "frisbee",
+    "skis",
+    "snowboard",
+    "sports ball",
+    "kite",
+    "baseball bat",
+    "baseball glove",
+    "skateboard",
+    "surfboard",
+    "tennis racket",
+    "bottle",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+}
 
 _YOLO_MODEL: Any | None = None
 _YOLO_LOCK = Lock()
@@ -42,31 +88,36 @@ def run_yolo_detection(
     image_path = STATIC_IMAGES_DIR / image.filename
     model = _load_yolo_model()
     device = _get_torch_device()
+    source_image = _open_source_image(image_path)
+    tiles = _build_tiles(source_image.width, source_image.height)
 
     logger.info(
-        "YOLOv8s inference started image_id=%s path=%s conf=%.2f imgsz=%s device=%s",
+        "YOLOv8s tiled inference started image_id=%s path=%s conf=%.2f imgsz=%s tile_size=%s tiles=%s device=%s",
         image.image_id,
         image_path,
         confidence_threshold,
         YOLO_IMAGE_SIZE,
+        YOLO_TILE_SIZE,
+        len(tiles),
         device,
     )
 
     try:
-        results = model.predict(
-            source=str(image_path),
-            imgsz=YOLO_IMAGE_SIZE,
-            conf=confidence_threshold,
-            iou=YOLO_IOU_THRESHOLD,
-            max_det=YOLO_MAX_DETECTIONS,
-            agnostic_nms=False,
+        raw_detections, filtered_count = _run_tiled_inference(
+            model=model,
+            image=source_image,
+            confidence_threshold=confidence_threshold,
             device=device,
-            verbose=False,
+            tiles=tiles,
         )
     except Exception as exc:
         raise YOLODetectionError("YOLOv8s inference failed.") from exc
 
-    detections = _extract_yolo_detections(results, image.width, image.height)
+    detections = non_max_suppression(
+        raw_detections,
+        iou_threshold=YOLO_IOU_THRESHOLD,
+        max_detections=YOLO_MAX_DETECTIONS,
+    )
     overlay = build_detection_overlay(
         width=image.width,
         height=image.height,
@@ -81,8 +132,10 @@ def run_yolo_detection(
     )
 
     logger.info(
-        "YOLOv8s inference completed image_id=%s detections=%s overlay=%s",
+        "YOLOv8s tiled inference completed image_id=%s raw_detections=%s filtered_by_class=%s final_detections=%s overlay=%s",
         image.image_id,
+        len(raw_detections),
+        filtered_count,
         len(detections),
         overlay_path,
     )
@@ -132,12 +185,89 @@ def _prepare_yolo_cache_dirs() -> None:
     os.environ.setdefault("MPLCONFIGDIR", str(MPL_CONFIG_DIR))
 
 
+def _open_source_image(image_path: Path) -> Image.Image:
+    try:
+        return ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
+    except OSError as exc:
+        raise YOLODetectionError(
+            f"Unable to read image for YOLO detection: {image_path.name}"
+        ) from exc
+
+
+def _build_tiles(width: int, height: int) -> list[tuple[int, int, int, int]]:
+    tile_size = min(YOLO_TILE_SIZE, max(width, height))
+    stride = max(1, int(tile_size * (1 - YOLO_TILE_OVERLAP)))
+    x_offsets = _axis_offsets(length=width, tile_size=tile_size, stride=stride)
+    y_offsets = _axis_offsets(length=height, tile_size=tile_size, stride=stride)
+
+    return [
+        (
+            x,
+            y,
+            min(x + tile_size, width),
+            min(y + tile_size, height),
+        )
+        for y in y_offsets
+        for x in x_offsets
+    ]
+
+
+def _axis_offsets(length: int, tile_size: int, stride: int) -> list[int]:
+    if length <= tile_size:
+        return [0]
+
+    offsets = list(range(0, max(1, length - tile_size + 1), stride))
+    final_offset = length - tile_size
+    if offsets[-1] != final_offset:
+        offsets.append(final_offset)
+
+    return offsets
+
+
+def _run_tiled_inference(
+    model: Any,
+    image: Image.Image,
+    confidence_threshold: float,
+    device: str,
+    tiles: list[tuple[int, int, int, int]],
+) -> tuple[list[DetectionResult], int]:
+    detections: list[DetectionResult] = []
+    filtered_count = 0
+
+    for x_min, y_min, x_max, y_max in tiles:
+        tile_image = image.crop((x_min, y_min, x_max, y_max))
+        results = model.predict(
+            source=tile_image,
+            imgsz=YOLO_IMAGE_SIZE,
+            conf=confidence_threshold,
+            iou=YOLO_IOU_THRESHOLD,
+            max_det=YOLO_MAX_DETECTIONS,
+            agnostic_nms=False,
+            device=device,
+            verbose=False,
+        )
+        tile_detections, tile_filtered_count = _extract_yolo_detections(
+            results=results,
+            x_offset=x_min,
+            y_offset=y_min,
+            image_width=image.width,
+            image_height=image.height,
+        )
+        detections.extend(tile_detections)
+        filtered_count += tile_filtered_count
+
+    return detections, filtered_count
+
+
 def _extract_yolo_detections(
     results: Any,
+    x_offset: int,
+    y_offset: int,
     image_width: int,
     image_height: int,
-) -> list[DetectionResult]:
+) -> tuple[list[DetectionResult], int]:
     detections: list[DetectionResult] = []
+    filtered_count = 0
 
     for result in results:
         boxes = getattr(result, "boxes", None)
@@ -155,15 +285,21 @@ def _extract_yolo_detections(
             class_values,
             strict=False,
         ):
+            label = str(names.get(int(class_id), f"class_{int(class_id)}"))
+            if _should_filter_label(label):
+                filtered_count += 1
+                continue
+
             x_min, y_min, x_max, y_max = _clamp_xyxy(
                 xyxy,
+                x_offset=x_offset,
+                y_offset=y_offset,
                 width=image_width,
                 height=image_height,
             )
             if x_max <= x_min or y_max <= y_min:
                 continue
 
-            label = str(names.get(int(class_id), f"class_{int(class_id)}"))
             detections.append(
                 DetectionResult(
                     label=label,
@@ -173,16 +309,26 @@ def _extract_yolo_detections(
             )
 
     detections.sort(key=lambda detection: detection.confidence, reverse=True)
-    return detections
+    return detections, filtered_count
 
 
-def _clamp_xyxy(xyxy: Any, width: int, height: int) -> tuple[int, int, int, int]:
+def _should_filter_label(label: str) -> bool:
+    return label.strip().lower() in YOLO_SUPPRESSED_LABELS
+
+
+def _clamp_xyxy(
+    xyxy: Any,
+    x_offset: int,
+    y_offset: int,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
     x_min, y_min, x_max, y_max = [int(round(float(value))) for value in xyxy]
     return (
-        min(max(x_min, 0), width),
-        min(max(y_min, 0), height),
-        min(max(x_max, 0), width),
-        min(max(y_max, 0), height),
+        min(max(x_min + x_offset, 0), width),
+        min(max(y_min + y_offset, 0), height),
+        min(max(x_max + x_offset, 0), width),
+        min(max(y_max + y_offset, 0), height),
     )
 
 

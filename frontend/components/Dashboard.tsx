@@ -14,17 +14,14 @@ import {
   type ImageMetadata
 } from "@/lib/api";
 
-const MapViewport = dynamic(
-  () => import("@/components/MapViewport").then((mod) => mod.MapViewport),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center bg-slate-100 text-sm text-muted">
-        Loading map
-      </div>
-    )
-  }
-);
+const DroneMap = dynamic(() => import("@/components/map/DroneMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full items-center justify-center bg-slate-100 text-sm text-muted">
+      Loading map...
+    </div>
+  )
+});
 
 type BackendState =
   | { status: "loading"; message: string }
@@ -193,7 +190,7 @@ export function Dashboard() {
         };
       });
       setSelectedImageId(uploadedImage.image_id);
-      setImageRevision(Date.now());
+      setImageRevision((currentRevision) => currentRevision + 1);
       setDetections([]);
       setMaskUrl(null);
       setDetectionRunSummary(null);
@@ -268,6 +265,10 @@ export function Dashboard() {
 
   const handleExportGeoJson = () => {
     if (!selectedImage || detections.length === 0 || !detectionRunSummary) {
+      return;
+    }
+
+    if (typeof document === "undefined") {
       return;
     }
 
@@ -365,7 +366,7 @@ export function Dashboard() {
           </aside>
 
           <section className="relative min-h-[520px] overflow-hidden rounded border border-line bg-white shadow-sm">
-            <MapViewport
+            <DroneMap
               detections={detections}
               image={selectedImage}
               maskUrl={showSegmentationMask ? maskUrl : null}
@@ -533,13 +534,13 @@ function DetectionControls({
     <div className="rounded border border-line bg-white p-4">
       <div>
         <p className="text-sm font-medium text-ink">Detection mode</p>
-        <div className="mt-2 grid grid-cols-3 rounded border border-line bg-slate-50 p-1">
+        <div className="mt-2 grid grid-cols-1 gap-1 rounded border border-line bg-slate-50 p-1">
           {detectionModeOptions.map((mode) => {
             const isSelected = detectionMode === mode;
 
             return (
               <button
-                className={`min-h-9 rounded px-2 py-1.5 text-sm font-semibold transition ${
+                className={`min-h-9 w-full whitespace-nowrap rounded px-3 py-1.5 text-center text-sm font-semibold leading-5 transition ${
                   isSelected
                     ? "bg-white text-ink shadow-sm"
                     : "text-muted hover:text-ink"
