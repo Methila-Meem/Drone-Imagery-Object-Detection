@@ -29,10 +29,13 @@ export type Detection = {
   bbox: [number, number, number, number];
 };
 
+export type DetectionMode = "real" | "simulated";
+
 export type DetectionResponse = {
   image_id: string;
-  mode: "real" | "simulated";
+  mode: DetectionMode;
   detections: Detection[];
+  mask_url: string | null;
 };
 
 const API_BASE_URL =
@@ -92,7 +95,7 @@ export async function runDetection({
 }: {
   imageId: string;
   confidenceThreshold: number;
-  mode?: "real" | "simulated";
+  mode?: DetectionMode;
 }): Promise<DetectionResponse> {
   const response = await fetch(`${API_BASE_URL}/api/detect`, {
     method: "POST",
@@ -109,8 +112,27 @@ export async function runDetection({
   });
 
   if (!response.ok) {
-    throw new Error(`Detection request failed: ${response.status}`);
+    throw new Error(
+      await getApiErrorMessage(response, "Detection request failed")
+    );
   }
 
   return response.json() as Promise<DetectionResponse>;
+}
+
+async function getApiErrorMessage(
+  response: Response,
+  fallback: string
+): Promise<string> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      return `${fallback}: ${payload.detail}`;
+    }
+  } catch {
+    // Keep the status fallback if the backend did not return JSON.
+  }
+
+  return `${fallback}: ${response.status}`;
 }

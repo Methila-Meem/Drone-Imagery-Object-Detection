@@ -19,3 +19,4 @@ class DetectionResponse(BaseModel):
     image_id: str
     mode: Literal["real", "simulated"]
     detections: list[DetectionResult]
+    mask_url: str | None = None

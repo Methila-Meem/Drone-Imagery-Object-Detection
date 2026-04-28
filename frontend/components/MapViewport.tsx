@@ -19,16 +19,19 @@ const fallbackCenter: [number, number] = [23.8103, 90.4125];
 type MapViewportProps = {
   image: ImageMetadata | null;
   detections: Detection[];
+  maskUrl: string | null;
 };
 
 const detectionStyles: Record<string, { color: string; fillColor: string }> = {
   building: { color: "#dc2626", fillColor: "#fecaca" },
   vegetation: { color: "#16a34a", fillColor: "#bbf7d0" },
   open_land: { color: "#ca8a04", fillColor: "#fef08a" },
+  "earth/ground": { color: "#ca8a04", fillColor: "#fef08a" },
+  road: { color: "#2563eb", fillColor: "#bfdbfe" },
   "road/path": { color: "#2563eb", fillColor: "#bfdbfe" }
 };
 
-export function MapViewport({ image, detections }: MapViewportProps) {
+export function MapViewport({ image, detections, maskUrl }: MapViewportProps) {
   const imageBounds = useMemo<LatLngBoundsExpression | null>(() => {
     if (!image) {
       return null;
@@ -72,6 +75,15 @@ export function MapViewport({ image, detections }: MapViewportProps) {
               opacity={0.9}
               url={image.image_url}
             />
+            {maskUrl ? (
+              <ImageOverlay
+                bounds={imageBounds}
+                interactive={false}
+                opacity={0.85}
+                url={maskUrl}
+                zIndex={350}
+              />
+            ) : null}
             <FitImageBounds bounds={imageBounds} />
             {detectionBounds.map(({ detection, bounds, key }) => {
               const style = detectionStyles[detection.label] ?? {

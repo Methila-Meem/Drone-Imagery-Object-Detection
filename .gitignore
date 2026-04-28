@@ -22,3 +22,4 @@ out/
 
 # Model artifacts
 model/.cache/
+backend/static/masks/

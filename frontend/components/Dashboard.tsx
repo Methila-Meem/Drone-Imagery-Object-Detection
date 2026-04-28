@@ -2,12 +2,14 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
+import { buildDetectionGeoJson } from "@/lib/geojson";
 import {
   getHealth,
   getImages,
   runDetection,
   uploadDroneImage,
   type Detection,
+  type DetectionMode,
   type HealthResponse,
   type ImageMetadata
 } from "@/lib/api";
@@ -46,6 +48,11 @@ type DetectionState =
   | { status: "success"; message: string }
   | { status: "error"; message: string };
 
+type DetectionRunSummary = {
+  mode: DetectionMode;
+  count: number;
+} | null;
+
 export function Dashboard() {
   const [backend, setBackend] = useState<BackendState>({
     status: "loading",
@@ -61,12 +68,18 @@ export function Dashboard() {
     message: null
   });
   const [imageRevision, setImageRevision] = useState<number>(0);
+  const [detectionMode, setDetectionMode] = useState<DetectionMode>("real");
   const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0.5);
   const [detections, setDetections] = useState<Detection[]>([]);
+  const [maskUrl, setMaskUrl] = useState<string | null>(null);
+  const [showSegmentationMask, setShowSegmentationMask] =
+    useState<boolean>(true);
   const [detectionState, setDetectionState] = useState<DetectionState>({
     status: "idle",
     message: null
   });
+  const [detectionRunSummary, setDetectionRunSummary] =
+    useState<DetectionRunSummary>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -175,6 +188,8 @@ export function Dashboard() {
       setSelectedImageId(uploadedImage.image_id);
       setImageRevision(Date.now());
       setDetections([]);
+      setMaskUrl(null);
+      setDetectionRunSummary(null);
       setDetectionState({ status: "idle", message: null });
       setUploadState({
         status: "success",
@@ -200,20 +215,34 @@ export function Dashboard() {
 
     setDetectionState({
       status: "running",
-      message: "Running SegFormer detection"
+      message: `Running ${formatDetectionMode(detectionMode)} detection`
     });
 
     try {
       const response = await runDetection({
         imageId: selectedImageId,
-        confidenceThreshold
+        confidenceThreshold,
+        mode: detectionMode
       });
       setDetections(response.detections);
+      setMaskUrl(response.mask_url);
+      setDetectionRunSummary({
+        mode: response.mode,
+        count: response.detections.length
+      });
       setDetectionState({
         status: "success",
-        message: `${response.detections.length} ${response.mode} detections found`
+        message:
+          response.detections.length > 0
+            ? `${response.detections.length} detections returned from ${formatDetectionMode(
+                response.mode
+              )}`
+            : "No detections found above this threshold."
       });
     } catch (error: unknown) {
+      setDetections([]);
+      setMaskUrl(null);
+      setDetectionRunSummary(null);
       setDetectionState({
         status: "error",
         message:
@@ -224,7 +253,33 @@ export function Dashboard() {
 
   const handleClearDetections = () => {
     setDetections([]);
+    setMaskUrl(null);
+    setDetectionRunSummary(null);
     setDetectionState({ status: "idle", message: null });
+  };
+
+  const handleExportGeoJson = () => {
+    if (!selectedImage || detections.length === 0 || !detectionRunSummary) {
+      return;
+    }
+
+    const geoJson = buildDetectionGeoJson({
+      detections,
+      image: selectedImage,
+      mode: detectionRunSummary.mode
+    });
+    const blob = new Blob([`${JSON.stringify(geoJson, null, 2)}\n`], {
+      type: "application/geo+json"
+    });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = objectUrl;
+    link.download = `detections_${selectedImage.image_id}.geojson`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
   };
 
   return (
@@ -279,21 +334,34 @@ export function Dashboard() {
               <DetectionControls
                 confidenceThreshold={confidenceThreshold}
                 detectionCount={detections.length}
+                detectionMode={detectionMode}
                 disabled={!selectedImage || detectionState.status === "running"}
+                hasMask={Boolean(maskUrl)}
+                showSegmentationMask={showSegmentationMask}
                 state={detectionState}
                 onClear={handleClearDetections}
+                onExportGeoJson={handleExportGeoJson}
+                onMaskVisibilityChange={setShowSegmentationMask}
+                onModeChange={(mode) => {
+                  setDetectionMode(mode);
+                  handleClearDetections();
+                }}
                 onRun={handleRunDetection}
                 onThresholdChange={setConfidenceThreshold}
               />
               <div className="grid grid-cols-2 gap-3">
                 <Metric label="Boxes" value={detections.length.toString()} />
-                <Metric label="Masks" value="0" />
+                <Metric label="Masks" value={maskUrl ? "1" : "0"} />
               </div>
             </div>
           </aside>
 
           <section className="relative min-h-[520px] overflow-hidden rounded border border-line bg-white shadow-sm">
-            <MapViewport image={selectedImage} detections={detections} />
+            <MapViewport
+              detections={detections}
+              image={selectedImage}
+              maskUrl={showSegmentationMask ? maskUrl : null}
+            />
             {imagesState.status === "loading" ? (
               <MapStatus message={imagesState.message} />
             ) : null}
@@ -308,7 +376,12 @@ export function Dashboard() {
           <aside className="rounded border border-line bg-white p-4 shadow-sm">
             <h2 className="text-lg font-semibold text-ink">Image details</h2>
             <ImageDetails image={selectedImage} />
-            <DetectionResults detections={detections} state={detectionState} />
+            <DetectionResults
+              detections={detections}
+              mode={detectionMode}
+              runSummary={detectionRunSummary}
+              state={detectionState}
+            />
           </aside>
         </section>
       </div>
@@ -420,17 +493,29 @@ function ImageUpload({
 function DetectionControls({
   confidenceThreshold,
   detectionCount,
+  detectionMode,
   disabled,
+  hasMask,
+  showSegmentationMask,
   state,
   onClear,
+  onExportGeoJson,
+  onMaskVisibilityChange,
+  onModeChange,
   onRun,
   onThresholdChange
 }: {
   confidenceThreshold: number;
   detectionCount: number;
+  detectionMode: DetectionMode;
   disabled: boolean;
+  hasMask: boolean;
+  showSegmentationMask: boolean;
   state: DetectionState;
   onClear: () => void;
+  onExportGeoJson: () => void;
+  onMaskVisibilityChange: (isVisible: boolean) => void;
+  onModeChange: (mode: DetectionMode) => void;
   onRun: () => Promise<void>;
   onThresholdChange: (threshold: number) => void;
 }) {
@@ -438,7 +523,31 @@ function DetectionControls({
 
   return (
     <div className="rounded border border-line bg-white p-4">
-      <div className="flex items-center justify-between gap-3">
+      <div>
+        <p className="text-sm font-medium text-ink">Detection mode</p>
+        <div className="mt-2 grid grid-cols-2 rounded border border-line bg-slate-50 p-1">
+          {(["simulated", "real"] as const).map((mode) => {
+            const isSelected = detectionMode === mode;
+
+            return (
+              <button
+                className={`min-h-9 rounded px-2 py-1.5 text-sm font-semibold transition ${
+                  isSelected
+                    ? "bg-white text-ink shadow-sm"
+                    : "text-muted hover:text-ink"
+                } disabled:cursor-not-allowed disabled:opacity-60`}
+                disabled={isRunning}
+                key={mode}
+                onClick={() => onModeChange(mode)}
+                type="button"
+              >
+                {formatDetectionMode(mode)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-4 flex items-center justify-between gap-3">
         <label className="text-sm font-medium text-ink" htmlFor="threshold">
           Confidence
         </label>
@@ -450,8 +559,8 @@ function DetectionControls({
         className="mt-3 w-full accent-teal-700"
         disabled={isRunning}
         id="threshold"
-        max="1"
-        min="0"
+        max="0.95"
+        min="0.1"
         onChange={(event) =>
           onThresholdChange(Number(event.currentTarget.value))
         }
@@ -459,6 +568,18 @@ function DetectionControls({
         type="range"
         value={confidenceThreshold}
       />
+      <label className="mt-3 flex items-center gap-2 text-sm text-ink">
+        <input
+          checked={showSegmentationMask}
+          className="h-4 w-4 accent-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={isRunning || !hasMask}
+          onChange={(event) =>
+            onMaskVisibilityChange(event.currentTarget.checked)
+          }
+          type="checkbox"
+        />
+        <span>Show segmentation mask</span>
+      </label>
       <div className="mt-4 grid grid-cols-[1fr_auto] gap-2">
         <button
           className="inline-flex min-h-10 items-center justify-center rounded bg-accent px-3 py-2 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
@@ -486,6 +607,14 @@ function DetectionControls({
           Clear Results
         </button>
       </div>
+      <button
+        className="mt-2 min-h-10 w-full rounded border border-line bg-white px-3 py-2 text-sm font-semibold text-ink transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={detectionCount === 0 || isRunning}
+        onClick={onExportGeoJson}
+        type="button"
+      >
+        Export GeoJSON
+      </button>
       {state.message ? (
         <p
           className={`mt-2 text-sm ${
@@ -529,22 +658,32 @@ function ImageDetails({ image }: { image: ImageMetadata | null }) {
 
 function DetectionResults({
   detections,
+  mode,
+  runSummary,
   state
 }: {
   detections: Detection[];
+  mode: DetectionMode;
+  runSummary: DetectionRunSummary;
   state: DetectionState;
 }) {
+  const returnedCount = runSummary?.count ?? detections.length;
+
   return (
     <section className="mt-6 border-t border-line pt-4">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-lg font-semibold text-ink">Detection results</h3>
         <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-muted">
-          {detections.length}
+          {returnedCount}
         </span>
       </div>
+      <dl className="mt-3 grid grid-cols-2 gap-2">
+        <ResultMeta label="Current mode" value={formatDetectionMode(mode)} />
+        <ResultMeta label="Returned" value={returnedCount.toString()} />
+      </dl>
       {state.status === "idle" && detections.length === 0 ? (
         <p className="mt-3 rounded border border-line bg-slate-50 p-3 text-sm text-muted">
-          Run detection to show SegFormer bounding boxes.
+          Run detection to show bounding boxes from the selected mode.
         </p>
       ) : null}
       {state.status === "running" ? (
@@ -554,7 +693,12 @@ function DetectionResults({
       ) : null}
       {state.status === "error" ? (
         <p className="mt-3 rounded border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-          {state.message}
+          {state.message ?? "Backend or model inference failed."}
+        </p>
+      ) : null}
+      {state.status === "success" && detections.length === 0 ? (
+        <p className="mt-3 rounded border border-line bg-slate-50 p-3 text-sm text-muted">
+          No detections found above this threshold.
         </p>
       ) : null}
       {detections.length > 0 ? (
@@ -581,6 +725,21 @@ function DetectionResults({
       ) : null}
     </section>
   );
+}
+
+function ResultMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-line bg-slate-50 px-3 py-2">
+      <dt className="text-xs font-medium uppercase tracking-[0.12em] text-muted">
+        {label}
+      </dt>
+      <dd className="mt-1 text-sm font-semibold text-ink">{value}</dd>
+    </div>
+  );
+}
+
+function formatDetectionMode(mode: DetectionMode): string {
+  return mode === "real" ? "Real SegFormer" : "Simulated";
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {

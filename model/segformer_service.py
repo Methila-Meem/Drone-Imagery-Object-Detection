@@ -18,6 +18,13 @@ _TARGET_LABEL_ALIASES = {
     "earth/ground": ("earth", "ground", "land", "dirt", "soil"),
 }
 
+_MASK_COLORS = {
+    "building": (220, 38, 38, 96),
+    "vegetation": (22, 163, 74, 96),
+    "road": (37, 99, 235, 96),
+    "earth/ground": (202, 138, 4, 88),
+}
+
 _MIN_COMPONENT_AREA_RATIO = 0.0003
 _MAX_BOXES_PER_LABEL = 20
 
@@ -31,6 +38,12 @@ class SegFormerDetection:
     label: str
     confidence: float
     bbox: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class SegFormerPrediction:
+    detections: list[SegFormerDetection]
+    mask_image: Image.Image
 
 
 class SegFormerService:
@@ -47,7 +60,7 @@ class SegFormerService:
         image_path: Path,
         confidence_threshold: float,
         output_size: tuple[int, int] | None = None,
-    ) -> list[SegFormerDetection]:
+    ) -> SegFormerPrediction:
         self._ensure_loaded()
 
         if self.processor is None or self.model is None or self.device is None:
@@ -78,13 +91,26 @@ class SegFormerService:
 
         class_map_np = class_map.cpu().numpy().astype(np.int32)
         confidence_np = confidence_map.cpu().numpy().astype(np.float32)
-
-        return self._extract_detections(
+        output_width = output_size[0] if output_size else image.width
+        output_height = output_size[1] if output_size else image.height
+        detections = self._extract_detections(
             class_map=class_map_np,
             confidence_map=confidence_np,
             confidence_threshold=confidence_threshold,
-            output_width=output_size[0] if output_size else image.width,
-            output_height=output_size[1] if output_size else image.height,
+            output_width=output_width,
+            output_height=output_height,
+        )
+        mask_image = self._build_mask_image(
+            class_map=class_map_np,
+            confidence_map=confidence_np,
+            confidence_threshold=confidence_threshold,
+            output_width=output_width,
+            output_height=output_height,
+        )
+
+        return SegFormerPrediction(
+            detections=detections,
+            mask_image=mask_image,
         )
 
     def _ensure_loaded(self) -> None:
@@ -199,6 +225,34 @@ class SegFormerService:
         detections.sort(key=lambda detection: detection.confidence, reverse=True)
         return detections
 
+    def _build_mask_image(
+        self,
+        class_map: np.ndarray,
+        confidence_map: np.ndarray,
+        confidence_threshold: float,
+        output_width: int,
+        output_height: int,
+    ) -> Image.Image:
+        height, width = class_map.shape
+        mask_rgba = np.zeros((height, width, 4), dtype=np.uint8)
+
+        for class_id, target_label in self.id_to_target_label.items():
+            color = _MASK_COLORS.get(target_label)
+            if color is None:
+                continue
+
+            pixels = (class_map == class_id) & (confidence_map >= confidence_threshold)
+            mask_rgba[pixels] = color
+
+        mask_image = Image.fromarray(mask_rgba, mode="RGBA")
+        if mask_image.size != (output_width, output_height):
+            mask_image = mask_image.resize(
+                (output_width, output_height),
+                resample=Image.Resampling.NEAREST,
+            )
+
+        return mask_image
+
 
 _SERVICE = SegFormerService()
 
@@ -207,7 +261,7 @@ def run_segformer_detection(
     image_path: Path,
     confidence_threshold: float,
     output_size: tuple[int, int] | None = None,
-) -> list[SegFormerDetection]:
+) -> SegFormerPrediction:
     return _SERVICE.predict(
         image_path=image_path,
         confidence_threshold=confidence_threshold,
