@@ -29,7 +29,7 @@ export type Detection = {
   bbox: [number, number, number, number];
 };
 
-export type DetectionMode = "real" | "simulated";
+export type DetectionMode = "simulated" | "segformer" | "yolo" | "real";
 
 export type DetectionResponse = {
   image_id: string;
@@ -91,7 +91,7 @@ export async function uploadDroneImage(file: File): Promise<ImageMetadata> {
 export async function runDetection({
   imageId,
   confidenceThreshold,
-  mode = "real"
+  mode = "segformer"
 }: {
   imageId: string;
   confidenceThreshold: number;

@@ -1,13 +1,13 @@
 # Drone Imagery Semantic Segmentation Platform
 
-Monorepo scaffold for a drone imagery analysis workspace. The app lets a user view registered drone imagery on a Leaflet map, upload a replacement image, run simulated or real SegFormer detection, view bounding boxes and optional segmentation masks, and export detection boxes as GeoJSON.
+Monorepo scaffold for a drone imagery analysis workspace. The app lets a user view registered drone imagery on a Leaflet map, upload a replacement image, compare simulated, SegFormer, and YOLOv8s detection modes, view bounding boxes and optional transparent overlays, and export detection boxes as GeoJSON.
 
 ## Stack
 
 - Frontend: Next.js 15, React 19, TypeScript, Tailwind CSS, Leaflet, React-Leaflet
 - Backend: FastAPI, Python, Pydantic Settings, Uvicorn
-- ML: Torch, HuggingFace Transformers, Pillow, NumPy, OpenCV headless
-- Model: `nvidia/segformer-b0-finetuned-ade-512-512`
+- ML: Torch, HuggingFace Transformers, Ultralytics, Pillow, NumPy, OpenCV headless
+- Models: `nvidia/segformer-b0-finetuned-ade-512-512`, `yolov8s.pt`
 - Visualization: georeferenced image overlay, bounding boxes, optional transparent mask overlay, GeoJSON export
 
 ## Project Structure
@@ -37,10 +37,13 @@ README.md
 - Replacement image upload through `POST /api/images`.
 - Detection modes:
   - `simulated`
-  - `real` SegFormer
+  - `segformer`
+  - `yolo`
 - Confidence threshold support.
 - Real SegFormer detections converted from semantic segmentation masks into bounding boxes.
 - Real SegFormer transparent PNG mask generation served from `/static/masks/...`.
+- YOLOv8s object detection using `yolov8s.pt` through `ultralytics`.
+- YOLOv8s transparent overlay generation from bounding boxes served from `/static/masks/overlays/...`.
 - Frontend controls for mode, confidence threshold, mask visibility, run, clear, and GeoJSON export.
 - Leaflet map with raster image overlay, mask overlay, and bounding box rectangles.
 - Frontend-only GeoJSON export as `detections_<image_id>.geojson`.
@@ -155,7 +158,17 @@ Real SegFormer request:
 ```json
 {
   "image_id": "drone_image_001",
-  "mode": "real",
+  "mode": "segformer",
+  "confidence_threshold": 0.5
+}
+```
+
+YOLOv8s request:
+
+```json
+{
+  "image_id": "drone_image_001",
+  "mode": "yolo",
   "confidence_threshold": 0.5
 }
 ```
@@ -165,7 +178,7 @@ Example response:
 ```json
 {
   "image_id": "drone_image_001",
-  "mode": "real",
+  "mode": "segformer",
   "detections": [
     {
       "label": "building",
@@ -179,11 +192,13 @@ Example response:
 
 `mask_url` is `null` for simulated detection. Real detection writes generated PNG masks under `backend/static/masks/`, which is ignored by git.
 
+YOLOv8s uses `imgsz=1024`, `iou=0.45`, `max_det=300`, and CUDA when available, otherwise CPU. YOLOv8s produces object-detection bounding boxes. Its transparent overlay is generated from bounding boxes and is not a true semantic segmentation mask.
+
 ## Frontend Workflow
 
 1. Select a registered image.
 2. Optionally upload a replacement drone image.
-3. Choose `Simulated` or `Real SegFormer`.
+3. Choose `Simulated`, `SegFormer`, or `YOLOv8s`.
 4. Adjust confidence threshold from `0.10` to `0.95`.
 5. Run detection.
 6. Toggle `Show segmentation mask` when a real mask is available.
@@ -198,8 +213,11 @@ GeoJSON export converts each pixel bbox into a geographic polygon using the regi
 
 ## Notes
 
-- The first real SegFormer run may download HuggingFace model files unless they already exist in `model/.cache/huggingface`.
-- The model cache is ignored by git.
+- The first SegFormer run may download HuggingFace model files unless they already exist in `model/.cache/huggingface`.
+- The first YOLOv8s run may download `yolov8s.pt` through Ultralytics unless it already exists in the local cache.
+- SegFormer and YOLOv8s both run on CUDA when available and CPU otherwise.
+- YOLOv8s is trained as a general object detector. It can be useful for comparison, but drone imagery accuracy depends on altitude, object scale, camera angle, and how well target objects match the COCO classes in `yolov8s.pt`.
+- Model caches are ignored by git.
 - Uploaded images currently replace the single demo image record; multiple persistent image records are not implemented yet.
 - Generated mask PNG cleanup is not implemented yet.
 - `npm run lint` is not currently wired because this Next.js project has no ESLint config.
@@ -223,6 +241,7 @@ Manual runtime checks have verified:
 - `GET /health`
 - Simulated detection with `mask_url: null`
 - Real SegFormer detection with generated static PNG mask
+- YOLOv8s detection mode compiles with lazy Ultralytics imports and returns the same API response shape
 - Generated mask dimensions match the registered image size
 - Frontend at `http://localhost:3000`
 - GeoJSON output structure: `FeatureCollection`, `Polygon`, closed rings, finite `[longitude, latitude]` coordinates

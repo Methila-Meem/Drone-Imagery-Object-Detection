@@ -51,7 +51,14 @@ type DetectionState =
 type DetectionRunSummary = {
   mode: DetectionMode;
   count: number;
+  confidenceThreshold: number;
 } | null;
+
+const detectionModeOptions = [
+  "simulated",
+  "segformer",
+  "yolo"
+] as const satisfies readonly DetectionMode[];
 
 export function Dashboard() {
   const [backend, setBackend] = useState<BackendState>({
@@ -68,7 +75,7 @@ export function Dashboard() {
     message: null
   });
   const [imageRevision, setImageRevision] = useState<number>(0);
-  const [detectionMode, setDetectionMode] = useState<DetectionMode>("real");
+  const [detectionMode, setDetectionMode] = useState<DetectionMode>("segformer");
   const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0.5);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [maskUrl, setMaskUrl] = useState<string | null>(null);
@@ -228,7 +235,8 @@ export function Dashboard() {
       setMaskUrl(response.mask_url);
       setDetectionRunSummary({
         mode: response.mode,
-        count: response.detections.length
+        count: response.detections.length,
+        confidenceThreshold
       });
       setDetectionState({
         status: "success",
@@ -378,7 +386,7 @@ export function Dashboard() {
             <ImageDetails image={selectedImage} />
             <DetectionResults
               detections={detections}
-              mode={detectionMode}
+              mode={detectionRunSummary?.mode ?? detectionMode}
               runSummary={detectionRunSummary}
               state={detectionState}
             />
@@ -525,8 +533,8 @@ function DetectionControls({
     <div className="rounded border border-line bg-white p-4">
       <div>
         <p className="text-sm font-medium text-ink">Detection mode</p>
-        <div className="mt-2 grid grid-cols-2 rounded border border-line bg-slate-50 p-1">
-          {(["simulated", "real"] as const).map((mode) => {
+        <div className="mt-2 grid grid-cols-3 rounded border border-line bg-slate-50 p-1">
+          {detectionModeOptions.map((mode) => {
             const isSelected = detectionMode === mode;
 
             return (
@@ -580,6 +588,11 @@ function DetectionControls({
         />
         <span>Show segmentation mask</span>
       </label>
+      {detectionMode === "yolo" ? (
+        <p className="mt-2 rounded border border-line bg-slate-50 p-2 text-xs text-muted">
+          YOLOv8s produces object-detection bounding boxes. The transparent overlay is generated from bounding boxes and is not a true semantic segmentation mask.
+        </p>
+      ) : null}
       <div className="mt-4 grid grid-cols-[1fr_auto] gap-2">
         <button
           className="inline-flex min-h-10 items-center justify-center rounded bg-accent px-3 py-2 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
@@ -680,6 +693,10 @@ function DetectionResults({
       <dl className="mt-3 grid grid-cols-2 gap-2">
         <ResultMeta label="Current mode" value={formatDetectionMode(mode)} />
         <ResultMeta label="Returned" value={returnedCount.toString()} />
+        <ResultMeta
+          label="Threshold"
+          value={runSummary ? runSummary.confidenceThreshold.toFixed(2) : "Not run"}
+        />
       </dl>
       {state.status === "idle" && detections.length === 0 ? (
         <p className="mt-3 rounded border border-line bg-slate-50 p-3 text-sm text-muted">
@@ -739,7 +756,15 @@ function ResultMeta({ label, value }: { label: string; value: string }) {
 }
 
 function formatDetectionMode(mode: DetectionMode): string {
-  return mode === "real" ? "Real SegFormer" : "Simulated";
+  if (mode === "yolo") {
+    return "YOLOv8s";
+  }
+
+  if (mode === "segformer" || mode === "real") {
+    return "SegFormer";
+  }
+
+  return "Simulated";
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {

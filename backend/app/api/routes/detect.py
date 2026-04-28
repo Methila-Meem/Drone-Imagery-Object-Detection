@@ -7,6 +7,7 @@ from app.services.segformer_detection import (
     run_real_detection,
 )
 from app.services.simulated_detection import run_simulated_detection
+from app.services.yolo_service import YOLODetectionError, run_yolo_detection
 
 
 router = APIRouter(prefix="/api/detect", tags=["detection"])
@@ -23,10 +24,18 @@ async def detect_objects(
                 confidence_threshold=detection_request.confidence_threshold,
             )
 
+        if detection_request.mode == "yolo":
+            return run_yolo_detection(
+                image_id=detection_request.image_id,
+                confidence_threshold=detection_request.confidence_threshold,
+                mask_url_base=str(request.url_for("static", path="masks")),
+            )
+
         return run_real_detection(
             image_id=detection_request.image_id,
             confidence_threshold=detection_request.confidence_threshold,
             mask_url_base=str(request.url_for("static", path="masks")),
+            response_mode=detection_request.mode,
         )
     except UnknownImageError as exc:
         raise HTTPException(
@@ -34,6 +43,11 @@ async def detect_objects(
             detail=f"Unknown image_id: {exc.image_id}",
         ) from exc
     except SegFormerDetectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except YOLODetectionError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
