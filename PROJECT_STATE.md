@@ -132,7 +132,10 @@ Image registry state:
 - Static URL path: `/static/images/drone_001.jpg`
 - Dimensions: `2048x1536`
 - Default map bounds: north `23.005`, south `23.000`, east `90.006`, west `90.000`
-- `POST /api/images` accepts a multipart image upload, stores it as `backend/static/images/drone_001.jpg`, converts it to JPEG, updates the registered image dimensions, and keeps the same default map bounds.
+- `POST /api/images` accepts a multipart image upload, stores it as `backend/static/images/drone_001.jpg`, converts it to JPEG, updates the registered image dimensions, and reads EXIF GPS latitude/longitude when available.
+- Uploaded images with EXIF GPS are centered on that map location by recalculating bounds around the existing image footprint size.
+- Uploaded images without EXIF GPS keep the previous image bounds.
+- Exact corner-level alignment still requires true footprint metadata, such as GeoTIFF bounds, a world file, or manually provided corner coordinates.
 - Unknown image IDs return `404` from `GET /api/images/{image_id}`.
 
 Detection API state:
@@ -496,6 +499,7 @@ Exported GeoJSON example:
 
 - Multiple image upload records.
 - User-uploaded file metadata persistence beyond replacing the local static image.
+- Exact georeferenced upload footprints from GeoTIFF/world-file/manual corner coordinates.
 - Segmentation endpoint.
 - Result history.
 - Database.

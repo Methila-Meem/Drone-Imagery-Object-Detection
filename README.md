@@ -75,6 +75,7 @@ Leaflet is loaded client-side using dynamic import (`ssr:false`) to prevent hydr
 - Backend health, image registry, upload, and detection endpoints.
 - One local demo image record: `drone_image_001`.
 - Replacement image upload through `POST /api/images`.
+- Uploaded images with EXIF GPS latitude/longitude are centered on that map location.
 - Detection mode selector for `Simulated`, `SegFormer`, and `YOLOv8s`.
 - Confidence threshold slider from `0.10` to `0.95`.
 - Optional transparent overlay toggle.
@@ -189,6 +190,8 @@ Content-Type: multipart/form-data
 
 The uploaded image replaces the local demo image and keeps the same image ID, `drone_image_001`.
 
+If the uploaded image contains EXIF GPS latitude and longitude, the backend recenters the image bounds around that GPS location. If GPS metadata is missing, the previous bounds are kept.
+
 ### Get Image By ID
 
 ```http
@@ -292,7 +295,7 @@ YOLOv8s is an object detector, not a semantic segmentation model. Its overlay is
 
 - Only one image record is currently registered: `drone_image_001`.
 - Uploaded images replace the demo image instead of creating persistent records.
-- Uploaded image geospatial bounds are fixed to the demo bounds.
+- Uploaded image geospatial bounds are centered from EXIF GPS when available. Exact corner alignment still requires real image footprint metadata, such as GeoTIFF bounds, a world file, or manually provided corner coordinates.
 - Generated mask and overlay PNG cleanup is not implemented.
 - No database, authentication, result history, or automated test suite yet.
 - SegFormer uses ADE classes, so label coverage depends on the pretrained model vocabulary.
@@ -307,6 +310,12 @@ YOLOv8s is an object detector, not a semantic segmentation model. Its overlay is
 - Confirm `frontend/app/globals.css` includes `@import "leaflet/dist/leaflet.css";`.
 - Restart the frontend dev server after dependency or CSS changes.
 - If you see hydration warnings caused by browser extensions injecting attributes into `<html>` or `<body>`, test in an incognito window with extensions disabled. The app also suppresses root hydration warnings for this case.
+
+### Uploaded Image Not Moving To GPS Location
+
+- Confirm the uploaded image has EXIF GPS latitude and longitude metadata.
+- Some image editors or messaging apps strip EXIF metadata before upload.
+- Latitude and longitude place the image center. To align image corners exactly with roads/buildings, provide true geospatial bounds from a GeoTIFF, world file, orthomosaic export, or manual corner coordinates.
 
 ### CORS Errors
 
