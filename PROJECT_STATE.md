@@ -6,11 +6,11 @@ Last updated: 2026-05-03
 
 This repository is a monorepo scaffold for a drone imagery semantic segmentation platform. The intended product is a web workspace where users can view drone imagery on a map, upload imagery, run model inference, and visualize object detection or segmentation results.
 
-Current implementation is an early scaffold with a working FastAPI backend, a working Next.js frontend, a backend health check, CORS configuration, a SQLite-backed image registry, filesystem image storage, static image serving, and a hydration-safe Leaflet map viewer that renders registered drone imagery as a georeferenced image overlay. Detection supports simulated results, real SegFormer semantic segmentation results converted into bounding boxes, and YOLOv8s object detection. Real SegFormer detection generates a transparent semantic segmentation mask PNG, while YOLOv8s generates a transparent bbox-derived overlay PNG. Detection results can be exported from the frontend as GIS-friendly GeoJSON polygons.
+Current implementation is an early scaffold with a working FastAPI backend, a working Next.js frontend, a backend health check, CORS configuration, a SQLite-backed image registry, filesystem image storage, static image serving, and a hydration-safe MapLibre GL JS map viewer that renders registered drone imagery as a georeferenced image overlay. Detection supports simulated results, real SegFormer semantic segmentation results converted into bounding boxes, and YOLOv8s object detection. Real SegFormer detection generates a transparent semantic segmentation mask PNG, while YOLOv8s generates a transparent bbox-derived overlay PNG. Detection results can be exported from the frontend as GIS-friendly GeoJSON polygons.
 
 ## Tech Stack
 
-- Frontend: Next.js 15, React 19, TypeScript, Tailwind CSS, Leaflet, React-Leaflet
+- Frontend: Next.js 15, React 19, TypeScript, Tailwind CSS, MapLibre GL JS 4.x, react-map-gl 7.x
 - Backend: FastAPI, Python, Pydantic Settings, Uvicorn, SQLite, aiosqlite
 - ML dependencies: Torch, Torchvision, HuggingFace Transformers, Ultralytics, Pillow, NumPy, OpenCV headless
 - Models: HuggingFace SegFormer `nvidia/segformer-b2-finetuned-ade-512-512`; YOLOv8s `yolov8s.pt`
@@ -59,10 +59,7 @@ Current implementation is an early scaffold with a working FastAPI backend, a wo
 |   |   +-- MapViewport.tsx
 |   |   +-- map/
 |   |   |   +-- DroneMap.tsx
-|   |   |   +-- RasterOverlay.tsx
-|   |   |   +-- DetectionBoxes.tsx
-|   |   |   +-- MaskOverlay.tsx
-|   |   |   +-- FitBounds.tsx
+|   |   |   +-- DroneMap.tsx
 |   +-- lib/api.ts
 |   +-- lib/geojson.ts
 |   +-- .env.example
@@ -216,7 +213,10 @@ Detection API state:
 - YOLOv8s detection lazy-loads `yolov8s.pt` through Ultralytics and stores its settings/cache under `model/.cache/ultralytics`.
 - YOLOv8s uses tiled inference with `1024` pixel tiles, `20%` overlap, `imgsz=1024`, `iou=0.45`, `max_det=300`, and CUDA when available, otherwise CPU.
 - YOLOv8s tile detections are projected back into original image pixel coordinates and merged with NMS.
-- YOLOv8s class filtering suppresses common misleading COCO false positives in aerial imagery, including `bench`, `potted plant`, and furniture-like classes.
+- YOLOv8s is an optional/extra object detector and does not replace the SRS-required default SegFormer semantic segmentation path.
+- YOLOv8s class filtering now uses a strict aerial allowlist instead of a suppression list: `person`, `bicycle`, `car`, `motorcycle`, `bus`, `truck`, and `boat`.
+- YOLOv8s rejects every non-allowlisted COCO class before NMS and overlay generation, including common aerial false positives such as `clock`, `book`, `bird`, `cat`, `dog`, `chair`, `traffic light`, furniture, and food classes.
+- YOLOv8s applies a service-level minimum confidence threshold plus minimum and maximum bbox area-ratio filters to reduce tiny specks and unrealistic huge boxes.
 - YOLOv8s overlay PNGs are generated from bounding boxes, saved under `backend/static/masks/overlays/`, and returned as `mask_url`; these are not true semantic segmentation masks.
 
 Backend settings are in `backend/app/core/config.py`.
@@ -251,13 +251,15 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 - Available Imagery option labels use `filename - short_image_id`; the selected image details panel shows full `filename` and full `image_id`.
 - Shows a vertically stacked detection mode selector for `Simulated`, `SegFormer`, and `YOLOv8s` so labels do not overlap in the narrow sidebar.
 - Shows a confidence threshold slider from `0.10` to `0.95` and a `Run Detection` button.
-- Shows a `Show segmentation mask` checkbox that becomes useful when a real detection response includes `mask_url`.
+- Shows a mode-aware overlay checkbox: `Show segmentation mask` for SegFormer masks and `Show YOLO overlay` for YOLO bbox-derived overlays.
 - Shows a loading spinner while detection is running.
 - Stores detection results in React state.
 - Stores the latest `mask_url` in React state.
+- Stores the selected bbox index in React state so clicking a map bbox highlights the matching detection result row.
 - Provides a `Clear Results` button.
 - Selects the first available image by default.
-- Shows a `Boxes` metric based on current detection result count and a `Masks` metric based on whether a mask URL is available.
+- Shows a `Boxes` metric based on current detection result count and an `Overlay` metric based on whether an overlay URL is available.
+- Shows a drone image opacity slider from `40%` to `100%`, defaulting to `85%`.
 - Renders the map workspace area.
 - Shows clean loading, error, and empty-image states for the image registry.
 - Shows a right-side image details panel with `image_id`, image size, and image bounds.
@@ -271,35 +273,31 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 
 `frontend/components/MapViewport.tsx` is now a compatibility wrapper around `frontend/components/map/DroneMap.tsx`.
 
-The Leaflet map is split into client-only components under `frontend/components/map/`:
-
-- `DroneMap.tsx`: owns `MapContainer`, OSM `TileLayer`, zoom control, map label, and layer composition.
-- `RasterOverlay.tsx`: renders the selected drone image as a Leaflet `ImageOverlay`.
-- `MaskOverlay.tsx`: renders optional SegFormer mask or YOLO bbox overlay PNG as a non-interactive `ImageOverlay`.
-- `DetectionBoxes.tsx`: converts pixel bboxes into Leaflet rectangles and renders tooltips/popups.
-- `FitBounds.tsx`: calls `useMap()` and fits the map to selected image bounds.
+The MapLibre map lives in `frontend/components/map/DroneMap.tsx`.
 
 The map components:
 
-- Uses React-Leaflet.
+- Uses MapLibre GL JS through `react-map-gl/maplibre`.
 - Are loaded only on the client through Next.js dynamic import with `ssr: false`.
-- Uses a fallback center at Dhaka coordinates `[23.8103, 90.4125]`.
-- Loads OpenStreetMap tiles.
-- Renders the selected registered drone image with Leaflet `ImageOverlay`.
-- Renders an optional transparent segmentation mask `ImageOverlay` when `mask_url` is present and mask visibility is enabled.
-- Sets the mask overlay to `interactive={false}` so it does not block map interaction.
-- Converts backend bounds into Leaflet bounds using southwest and northeast corners.
-- Converts detection pixel bboxes from `[x_min, y_min, x_max, y_max]` into Leaflet geographic rectangles using image width, height, and bounds.
+- Uses a fallback center at Dhaka coordinates `{ latitude: 23.8103, longitude: 90.4125, zoom: 12 }`.
+- Loads OpenStreetMap raster tiles through a MapLibre raster source using `https://tile.openstreetmap.org/{z}/{x}/{y}.png`.
+- Renders the selected registered drone image through a MapLibre image source plus raster layer.
+- Maps image source corners in `[lng, lat]` order as top-left, top-right, bottom-right, bottom-left.
+- Renders optional SegFormer mask or YOLO bbox overlay PNGs through a second MapLibre image source plus raster layer at the same coordinates.
+- Uses `0.6` mask/overlay raster opacity by default.
+- Uses a dashboard-controlled drone image opacity slider defaulting to `0.85`.
+- Converts detection pixel bboxes from `[x_min, y_min, x_max, y_max]` into geographic corners using image width, height, and bounds.
 - Accounts for top-left image pixel origin by mapping `y=0` to the image north edge.
-- Renders detections as Leaflet `Rectangle` overlays aligned to the raster image.
-- Keeps detection rectangle overlays visible above the mask overlay.
-- Shows detection label and confidence in rectangle tooltip/popup UI.
+- Projects bbox geographic corners through `map.project()` and renders synchronized SVG polygons above the MapLibre canvas.
+- Reprojects SVG bbox polygons on map load, move, zoom, and resize so boxes remain synced during pan/zoom.
+- Shows each detection label and confidence as an SVG label.
+- Clicking an SVG bbox highlights the matching detection panel entry.
 - Fits the map viewport to the selected image bounds.
-- Supports normal Leaflet zoom and pan interactions.
-- Moves the Leaflet zoom controls to the top-right so they do not overlap the image label.
+- Supports normal MapLibre zoom and pan interactions.
+- Places MapLibre navigation controls at the top-right so they do not overlap the image label.
 - Shows a small overlay label with the selected image filename.
 - Preserve layer order: OSM base, raster image, mask overlay, bounding boxes.
-- Memoize image bounds and detection bounds and use `React.memo` on map subcomponents.
+- Memoizes image coordinates and projected detection geometry and uses `React.memo` on the map component.
 
 `frontend/app/layout.tsx`:
 
@@ -308,8 +306,8 @@ The map components:
 
 `frontend/app/globals.css`:
 
-- Imports Leaflet CSS globally with `@import "leaflet/dist/leaflet.css";`.
-- Sets `.leaflet-container` to full width and height.
+- Imports MapLibre CSS globally with `@import "maplibre-gl/dist/maplibre-gl.css";`.
+- Sets `.maplibregl-map` to full width and height and removes the canvas focus outline.
 
 `frontend/lib/api.ts` contains the API helper:
 
@@ -375,7 +373,11 @@ YOLOv8s service state:
 - Weights: `yolov8s.pt`
 - Library: Ultralytics
 - Inference is tiled and bbox coordinates are returned in original image pixel space.
-- COCO labels known to produce misleading aerial false positives are filtered before NMS and overlay generation.
+- COCO labels are gated through the aerial allowlist before NMS and overlay generation.
+- YOLOv8s is an optional/extra object detector; SegFormer remains the default SRS-compatible model path.
+- YOLOv8s allows only aerial-relevant COCO object classes: `person`, `bicycle`, `car`, `motorcycle`, `bus`, `truck`, and `boat`.
+- YOLOv8s rejects non-allowlisted classes such as `clock`, `book`, `bird`, `cat`, `dog`, `chair`, `traffic light`, furniture, and food classes.
+- YOLOv8s applies a minimum confidence floor and bbox area-ratio filters before NMS.
 - YOLO overlay output is a transparent bbox overlay, not semantic segmentation.
 
 `model/.cache/` is ignored by git and may contain downloaded HuggingFace artifacts on local machines.
@@ -519,7 +521,7 @@ Exported GeoJSON example:
 - SegFormer mask PNG generation under `backend/static/outputs/{detection_id}_mask.png`.
 - SegFormer detection persistence in SQLite `detections`.
 - SegFormer background startup warm-up through a tiny dummy inference.
-- YOLOv8s tiled inference with class filtering and bbox-derived overlay generation.
+- YOLOv8s tiled inference with strict aerial allowlist filtering, confidence and bbox area-ratio filters, and bbox-derived overlay generation.
 - Shared bbox NMS utility and shared overlay save/render utility.
 - Static serving for generated mask PNGs through `/static/masks/...`.
 - Clear `503` API errors when SegFormer loading or inference fails.
@@ -533,12 +535,12 @@ Exported GeoJSON example:
 - Frontend SegFormer detection request through `POST /api/detect` by default, with typed support for simulated and YOLO modes.
 - Frontend detection mode selector for `Simulated`, `SegFormer`, and `YOLOv8s`.
 - Frontend confidence threshold slider constrained to `0.10` through `0.95`.
-- Hydration-safe client-only Leaflet map split into `frontend/components/map/`.
+- Hydration-safe client-only MapLibre GL JS map in `frontend/components/map/DroneMap.tsx`.
 - Dynamic map import with `ssr: false`.
 - Document-level hydration warning suppression for extension-injected root/body attributes.
 - Dashboard layout with backend status display.
 - Image selector for registered backend images.
-- Detection controls with mode selector, confidence threshold, mask toggle, loading spinner, run button, and clear results button.
+- Detection controls with mode selector, confidence threshold, drone image opacity slider, mode-aware overlay toggle, loading spinner, run button, and clear results button.
 - Frontend-only GeoJSON export for current detection results.
 - GeoJSON export converts pixel bounding boxes to geographic polygons using registered image bounds.
 - GeoJSON features include `label`, `confidence`, `image_id`, and `mode`.
@@ -548,18 +550,19 @@ Exported GeoJSON example:
 - Better detection empty state for no detections above the threshold.
 - Detection error state for backend/model failures.
 - Loading, error, and empty states for image registry data.
-- Leaflet map viewport.
-- Leaflet CSS loaded globally from `frontend/app/globals.css`.
-- OpenStreetMap basemap.
-- Leaflet `ImageOverlay` rendering of the selected drone image.
-- Leaflet `ImageOverlay` rendering of optional segmentation mask PNGs.
-- Leaflet `Rectangle` overlays for detection bounding boxes.
+- MapLibre map viewport.
+- MapLibre CSS loaded globally from `frontend/app/globals.css`.
+- OpenStreetMap raster basemap through MapLibre raster source.
+- MapLibre image source and raster layer rendering of the selected drone image.
+- MapLibre image source and raster layer rendering of optional SegFormer mask PNGs and YOLO bbox overlay PNGs.
+- SVG overlay rendering for detection bounding boxes, synchronized with MapLibre viewport changes through `map.project()`.
 - Pixel-to-map bbox conversion aligned to the image raster bounds.
 - Map auto-fit to backend-provided image bounds.
-- Leaflet zoom controls positioned at the top-right.
+- MapLibre navigation controls positioned at the top-right.
+- Bbox click selection highlights the matching detection result panel row.
 - Detection mode selector adjusted to avoid overlap in the sidebar.
 - Boxes metric based on current detection results.
-- Masks metric based on current mask availability.
+- Overlay metric based on current mask or YOLO overlay availability.
 - `.gitignore` excludes `model/.cache/` so downloaded model artifacts are not committed.
 - `.gitignore` excludes `backend/static/masks/` so generated mask PNGs are not committed.
 - `.gitignore` excludes `backend/static/outputs/` so generated SegFormer output PNGs are not committed.
@@ -574,7 +577,7 @@ Exported GeoJSON example:
 - Configurable model/cache settings through backend environment variables.
 - Mask cleanup or retention policy for generated temporary mask PNGs.
 - Automated browser test that clicks `Export GeoJSON` and validates the downloaded file.
-- Automated browser test for Leaflet hydration and map overlay rendering.
+- Automated browser test for MapLibre hydration and map overlay rendering.
 - Custom-trained detector or segmenter for target drone land-cover classes such as `building`, `river`, `road`, `open_field`, and `vegetation`.
 
 ## Good Next Tasks
@@ -609,17 +612,28 @@ The project is currently in scaffold stage. The main architectural intent is:
 - Real SegFormer detection now returns `mask_url` for a transparent segmentation PNG.
 - Segmentation masks are optional frontend overlays, while bounding boxes remain visible above the mask.
 - YOLOv8s overlays use the same `mask_url` frontend path, but are bbox-derived comparison overlays rather than true semantic segmentation masks.
-- Tiled YOLO plus class filtering improves scale handling and suppresses misleading COCO labels, but exact drone land-cover classes still require custom training or a fine-tuned segmentation model.
+- Tiled YOLO plus strict aerial allowlist filtering improves scale handling and rejects misleading COCO labels, but exact drone land-cover classes still require custom training or a fine-tuned segmentation model.
 - GeoJSON export is frontend-only and lives in `frontend/lib/geojson.ts`.
 - GeoJSON polygons use the same registered image bounds and top-left pixel-origin assumptions as the map overlay.
-- Leaflet rendering lives in `frontend/components/map/` and must remain client-only.
-- Keep `MapContainer` stable; avoid adding a changing `key` unless intentionally remounting the map.
+- MapLibre rendering lives in `frontend/components/map/DroneMap.tsx` and must remain client-only.
+- Keep the MapLibre `Map` stable; avoid adding a changing `key` unless intentionally remounting the map.
 - Browser extension hydration attributes are suppressed at the root/body, but app-rendered content should still avoid SSR/client-only value mismatches.
 
 ## Verification Notes
 
 Recent checks after SegFormer-B2 SRS pipeline update:
 
+- Frontend MapLibre migration installed `maplibre-gl@^4.7.1` and `react-map-gl@^7.1.9`; Leaflet, React-Leaflet, and `@types/leaflet` were removed from frontend dependencies.
+- Frontend TypeScript check passed with `.\node_modules\.bin\tsc.cmd --noEmit --incremental false` after replacing Leaflet components with MapLibre.
+- Frontend production build passed with `npm.cmd run build` after the MapLibre migration.
+- Headless Chrome verification against `http://127.0.0.1:3001` confirmed `.maplibregl-map` and `.maplibregl-canvas` rendered, OSM tile requests were issued to `https://tile.openstreetmap.org/...`, and the selected drone raster was requested from `/static/images/...`.
+- Simulated detection browser verification rendered 8 SVG bbox polygons with label/confidence text, confirmed bbox SVG points changed after MapLibre zoom, and confirmed clicking a bbox highlighted one matching detection panel entry.
+- YOLO browser verification confirmed the mode label changed to `Show YOLO overlay`, the overlay metric showed an overlay, and a MapLibre mask/overlay image request was made to `/static/masks/overlays/...`.
+- Browser console/event verification found no hydration mismatch errors during the MapLibre checks; the only captured warning/error was a missing favicon-style `404`.
+- Backend compile check passed with `.venv\Scripts\python.exe -m compileall app ..\model` after YOLO aerial allowlist update.
+- Frontend TypeScript check passed with `.\node_modules\.bin\tsc.cmd --noEmit --incremental false` after the mode-aware overlay label update.
+- Direct YOLOv8s service verification passed for seeded demo image `11111111-1111-4111-8111-111111111111` at confidence `0.5`: response mode was `yolo`, `model_used` was `yolov8s.pt`, returned labels were only `person`, and blocked false-positive labels `clock`, `book`, `bird`, `cat`, `dog`, `chair`, and `traffic light` were absent.
+- SegFormer default preservation was rechecked in `backend/app/schemas/detection.py` and `frontend/lib/api.ts`; both still default detection mode to `segformer`.
 - Backend compile check passed with `.venv\Scripts\python.exe -m compileall app ..\model`.
 - Frontend TypeScript check passed with `.\node_modules\.bin\tsc.cmd --noEmit --incremental false`.
 - Upload endpoint verification passed with a real multipart request using field name `file`.

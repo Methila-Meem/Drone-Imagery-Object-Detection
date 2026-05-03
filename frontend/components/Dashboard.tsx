@@ -88,8 +88,10 @@ export function Dashboard() {
   const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0.5);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [maskUrl, setMaskUrl] = useState<string | null>(null);
-  const [showSegmentationMask, setShowSegmentationMask] =
-    useState<boolean>(true);
+  const [showOverlay, setShowOverlay] = useState<boolean>(true);
+  const [droneOpacity, setDroneOpacity] = useState<number>(0.85);
+  const [selectedDetectionIndex, setSelectedDetectionIndex] =
+    useState<number | null>(null);
   const [detectionState, setDetectionState] = useState<DetectionState>({
     status: "idle",
     message: null
@@ -245,6 +247,7 @@ export function Dashboard() {
       });
       setDetections(response.detections);
       setMaskUrl(response.mask_url);
+      setSelectedDetectionIndex(null);
       setDetectionRunSummary({
         mode: response.mode,
         count: response.detections.length,
@@ -262,6 +265,7 @@ export function Dashboard() {
     } catch (error: unknown) {
       setDetections([]);
       setMaskUrl(null);
+      setSelectedDetectionIndex(null);
       setDetectionRunSummary(null);
       setDetectionState({
         status: "error",
@@ -274,6 +278,7 @@ export function Dashboard() {
   const handleClearDetections = () => {
     setDetections([]);
     setMaskUrl(null);
+    setSelectedDetectionIndex(null);
     setDetectionRunSummary(null);
     setDetectionState({ status: "idle", message: null });
   };
@@ -360,23 +365,25 @@ export function Dashboard() {
                 confidenceThreshold={confidenceThreshold}
                 detectionCount={detections.length}
                 detectionMode={detectionMode}
+                droneOpacity={droneOpacity}
                 disabled={!selectedImage || detectionState.status === "running"}
                 hasMask={Boolean(maskUrl)}
-                showSegmentationMask={showSegmentationMask}
+                showOverlay={showOverlay}
                 state={detectionState}
                 onClear={handleClearDetections}
                 onExportGeoJson={handleExportGeoJson}
-                onMaskVisibilityChange={setShowSegmentationMask}
+                onOverlayVisibilityChange={setShowOverlay}
                 onModeChange={(mode) => {
                   setDetectionMode(mode);
                   handleClearDetections();
                 }}
+                onOpacityChange={setDroneOpacity}
                 onRun={handleRunDetection}
                 onThresholdChange={setConfidenceThreshold}
               />
               <div className="grid grid-cols-2 gap-3">
                 <Metric label="Boxes" value={detections.length.toString()} />
-                <Metric label="Masks" value={maskUrl ? "1" : "0"} />
+                <Metric label="Overlay" value={maskUrl ? "1" : "0"} />
               </div>
             </div>
           </aside>
@@ -384,8 +391,11 @@ export function Dashboard() {
           <section className="relative min-h-[520px] overflow-hidden rounded border border-line bg-white shadow-sm">
             <DroneMap
               detections={detections}
+              droneOpacity={droneOpacity}
               image={selectedImage}
-              maskUrl={showSegmentationMask ? maskUrl : null}
+              maskUrl={showOverlay ? maskUrl : null}
+              onDetectionSelect={setSelectedDetectionIndex}
+              selectedDetectionIndex={selectedDetectionIndex}
             />
             {imagesState.status === "loading" ? (
               <MapStatus message={imagesState.message} />
@@ -405,6 +415,7 @@ export function Dashboard() {
               detections={detections}
               mode={detectionRunSummary?.mode ?? detectionMode}
               runSummary={detectionRunSummary}
+              selectedDetectionIndex={selectedDetectionIndex}
               state={detectionState}
             />
           </aside>
@@ -652,32 +663,38 @@ function DetectionControls({
   confidenceThreshold,
   detectionCount,
   detectionMode,
+  droneOpacity,
   disabled,
   hasMask,
-  showSegmentationMask,
+  showOverlay,
   state,
   onClear,
   onExportGeoJson,
-  onMaskVisibilityChange,
+  onOverlayVisibilityChange,
   onModeChange,
+  onOpacityChange,
   onRun,
   onThresholdChange
 }: {
   confidenceThreshold: number;
   detectionCount: number;
   detectionMode: DetectionMode;
+  droneOpacity: number;
   disabled: boolean;
   hasMask: boolean;
-  showSegmentationMask: boolean;
+  showOverlay: boolean;
   state: DetectionState;
   onClear: () => void;
   onExportGeoJson: () => void;
-  onMaskVisibilityChange: (isVisible: boolean) => void;
+  onOverlayVisibilityChange: (isVisible: boolean) => void;
   onModeChange: (mode: DetectionMode) => void;
+  onOpacityChange: (opacity: number) => void;
   onRun: () => Promise<void>;
   onThresholdChange: (threshold: number) => void;
 }) {
   const isRunning = state.status === "running";
+  const overlayLabel =
+    detectionMode === "yolo" ? "Show YOLO overlay" : "Show segmentation mask";
 
   return (
     <div className="rounded border border-line bg-white p-4">
@@ -726,17 +743,38 @@ function DetectionControls({
         type="range"
         value={confidenceThreshold}
       />
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <label className="text-sm font-medium text-ink" htmlFor="drone-opacity">
+          Drone opacity
+        </label>
+        <span className="font-mono text-sm text-muted">
+          {Math.round(droneOpacity * 100)}%
+        </span>
+      </div>
+      <input
+        className="mt-3 w-full accent-teal-700"
+        disabled={isRunning}
+        id="drone-opacity"
+        max="1"
+        min="0.4"
+        onChange={(event) =>
+          onOpacityChange(Number(event.currentTarget.value))
+        }
+        step="0.05"
+        type="range"
+        value={droneOpacity}
+      />
       <label className="mt-3 flex items-center gap-2 text-sm text-ink">
         <input
-          checked={showSegmentationMask}
+          checked={showOverlay}
           className="h-4 w-4 accent-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={isRunning || !hasMask}
           onChange={(event) =>
-            onMaskVisibilityChange(event.currentTarget.checked)
+            onOverlayVisibilityChange(event.currentTarget.checked)
           }
           type="checkbox"
         />
-        <span>Show segmentation mask</span>
+        <span>{overlayLabel}</span>
       </label>
       {detectionMode === "yolo" ? (
         <p className="mt-2 rounded border border-line bg-slate-50 p-2 text-xs text-muted">
@@ -824,11 +862,13 @@ function DetectionResults({
   detections,
   mode,
   runSummary,
+  selectedDetectionIndex,
   state
 }: {
   detections: Detection[];
   mode: DetectionMode;
   runSummary: DetectionRunSummary;
+  selectedDetectionIndex: number | null;
   state: DetectionState;
 }) {
   const returnedCount = runSummary?.count ?? detections.length;
@@ -873,7 +913,11 @@ function DetectionResults({
         <ul className="mt-3 space-y-2">
           {detections.map((detection, index) => (
             <li
-              className="rounded border border-line bg-slate-50 p-3"
+              className={`rounded border p-3 ${
+                selectedDetectionIndex === index
+                  ? "border-orange-300 bg-orange-50"
+                  : "border-line bg-slate-50"
+              }`}
               key={`${detection.label}-${index}-${detection.bbox.join("-")}`}
             >
               <div className="flex items-center justify-between gap-3">

@@ -1,5 +1,7 @@
 import logging
 import os
+import time
+from uuid import uuid4
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -29,46 +31,18 @@ YOLO_TILE_SIZE = 1024
 YOLO_TILE_OVERLAP = 0.2
 YOLO_CACHE_DIR = Path(__file__).resolve().parents[3] / "model" / ".cache" / "ultralytics"
 MPL_CONFIG_DIR = Path(__file__).resolve().parents[3] / "model" / ".cache" / "matplotlib"
+YOLO_MIN_CONFIDENCE = 0.25
+YOLO_MIN_BBOX_AREA_RATIO = 0.00002
+YOLO_MAX_BBOX_AREA_RATIO = 0.25
 
-YOLO_SUPPRESSED_LABELS = {
-    "bench",
-    "potted plant",
-    "chair",
-    "couch",
-    "bed",
-    "dining table",
-    "toilet",
-    "sink",
-    "vase",
-    "handbag",
-    "tie",
-    "suitcase",
-    "frisbee",
-    "skis",
-    "snowboard",
-    "sports ball",
-    "kite",
-    "baseball bat",
-    "baseball glove",
-    "skateboard",
-    "surfboard",
-    "tennis racket",
-    "bottle",
-    "cup",
-    "fork",
-    "knife",
-    "spoon",
-    "bowl",
-    "banana",
-    "apple",
-    "sandwich",
-    "orange",
-    "broccoli",
-    "carrot",
-    "hot dog",
-    "pizza",
-    "donut",
-    "cake",
+AERIAL_ALLOWED_CLASSES = {
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "bus",
+    "truck",
+    "boat",
 }
 
 _YOLO_MODEL: Any | None = None
@@ -84,6 +58,9 @@ async def run_yolo_detection(
     confidence_threshold: float,
     mask_url_base: str | None = None,
 ) -> DetectionResponse:
+    started_at = time.perf_counter()
+    detection_id = str(uuid4())
+
     try:
         image = await get_image(image_id)
     except UnknownImageError:
@@ -106,11 +83,13 @@ async def run_yolo_detection(
         device,
     )
 
+    effective_confidence_threshold = max(confidence_threshold, YOLO_MIN_CONFIDENCE)
+
     try:
         raw_detections, filtered_count = _run_tiled_inference(
             model=model,
             image=source_image,
-            confidence_threshold=confidence_threshold,
+            confidence_threshold=effective_confidence_threshold,
             device=device,
             tiles=tiles,
         )
@@ -129,14 +108,15 @@ async def run_yolo_detection(
     )
     overlay_path = save_overlay_image(
         image_id=image.image_id,
-        confidence_threshold=confidence_threshold,
+        confidence_threshold=effective_confidence_threshold,
         image=overlay,
         prefix="yolo_overlay",
         subdir="overlays",
     )
+    inference_time_ms = round((time.perf_counter() - started_at) * 1000)
 
     logger.info(
-        "YOLOv8s tiled inference completed image_id=%s raw_detections=%s filtered_by_class=%s final_detections=%s overlay=%s",
+        "YOLOv8s tiled inference completed image_id=%s raw_detections=%s filtered=%s final_detections=%s overlay=%s",
         image.image_id,
         len(raw_detections),
         filtered_count,
@@ -145,8 +125,13 @@ async def run_yolo_detection(
     )
 
     return DetectionResponse(
+        detection_id=detection_id,
         image_id=image.image_id,
         mode="yolo",
+        model_used=YOLO_MODEL_NAME,
+        inference_time_ms=inference_time_ms,
+        image_width=image.width,
+        image_height=image.height,
         detections=detections,
         mask_url=build_static_url(mask_url_base, overlay_path),
     )
@@ -289,8 +274,13 @@ def _extract_yolo_detections(
             class_values,
             strict=False,
         ):
-            label = str(names.get(int(class_id), f"class_{int(class_id)}"))
-            if _should_filter_label(label):
+            label = _normalize_yolo_label(names.get(int(class_id), f"class_{int(class_id)}"))
+            if not _is_allowed_aerial_label(label):
+                filtered_count += 1
+                continue
+
+            confidence_value = float(confidence)
+            if confidence_value < YOLO_MIN_CONFIDENCE:
                 filtered_count += 1
                 continue
 
@@ -304,10 +294,19 @@ def _extract_yolo_detections(
             if x_max <= x_min or y_max <= y_min:
                 continue
 
+            bbox_area_ratio = _bbox_area_ratio(
+                bbox=(x_min, y_min, x_max, y_max),
+                image_width=image_width,
+                image_height=image_height,
+            )
+            if not _is_valid_bbox_area_ratio(bbox_area_ratio):
+                filtered_count += 1
+                continue
+
             detections.append(
                 DetectionResult(
                     label=label,
-                    confidence=round(float(confidence), 4),
+                    confidence=round(confidence_value, 4),
                     bbox=(x_min, y_min, x_max, y_max),
                 )
             )
@@ -316,8 +315,27 @@ def _extract_yolo_detections(
     return detections, filtered_count
 
 
-def _should_filter_label(label: str) -> bool:
-    return label.strip().lower() in YOLO_SUPPRESSED_LABELS
+def _normalize_yolo_label(label: Any) -> str:
+    return str(label).strip().lower()
+
+
+def _is_allowed_aerial_label(label: str) -> bool:
+    return label in AERIAL_ALLOWED_CLASSES
+
+
+def _bbox_area_ratio(
+    bbox: tuple[int, int, int, int],
+    image_width: int,
+    image_height: int,
+) -> float:
+    x_min, y_min, x_max, y_max = bbox
+    image_area = max(image_width * image_height, 1)
+    bbox_area = max(x_max - x_min, 0) * max(y_max - y_min, 0)
+    return bbox_area / image_area
+
+
+def _is_valid_bbox_area_ratio(area_ratio: float) -> bool:
+    return YOLO_MIN_BBOX_AREA_RATIO <= area_ratio <= YOLO_MAX_BBOX_AREA_RATIO
 
 
 def _clamp_xyxy(
