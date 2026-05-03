@@ -1,19 +1,19 @@
 # Project State Handoff
 
-Last updated: 2026-04-28
+Last updated: 2026-05-03
 
 ## Project Overview
 
 This repository is a monorepo scaffold for a drone imagery semantic segmentation platform. The intended product is a web workspace where users can view drone imagery on a map, upload imagery, run model inference, and visualize object detection or segmentation results.
 
-Current implementation is an early scaffold with a working FastAPI backend, a working Next.js frontend, a backend health check, CORS configuration, a local image registry, static image serving, and a hydration-safe Leaflet map viewer that renders registered drone imagery as a georeferenced image overlay. Detection supports simulated results, real SegFormer semantic segmentation results converted into bounding boxes, and YOLOv8s object detection. Real SegFormer detection generates a transparent semantic segmentation mask PNG, while YOLOv8s generates a transparent bbox-derived overlay PNG. Detection results can be exported from the frontend as GIS-friendly GeoJSON polygons.
+Current implementation is an early scaffold with a working FastAPI backend, a working Next.js frontend, a backend health check, CORS configuration, a SQLite-backed image registry, filesystem image storage, static image serving, and a hydration-safe Leaflet map viewer that renders registered drone imagery as a georeferenced image overlay. Detection supports simulated results, real SegFormer semantic segmentation results converted into bounding boxes, and YOLOv8s object detection. Real SegFormer detection generates a transparent semantic segmentation mask PNG, while YOLOv8s generates a transparent bbox-derived overlay PNG. Detection results can be exported from the frontend as GIS-friendly GeoJSON polygons.
 
 ## Tech Stack
 
 - Frontend: Next.js 15, React 19, TypeScript, Tailwind CSS, Leaflet, React-Leaflet
-- Backend: FastAPI, Python, Pydantic Settings, Uvicorn
+- Backend: FastAPI, Python, Pydantic Settings, Uvicorn, SQLite, aiosqlite
 - ML dependencies: Torch, Torchvision, HuggingFace Transformers, Ultralytics, Pillow, NumPy, OpenCV headless
-- Models: HuggingFace SegFormer `nvidia/segformer-b0-finetuned-ade-512-512`; YOLOv8s `yolov8s.pt`
+- Models: HuggingFace SegFormer `nvidia/segformer-b2-finetuned-ade-512-512`; YOLOv8s `yolov8s.pt`
 - Current visualization direction: bounding boxes plus optional SegFormer mask / YOLO overlay
 
 ## Repository Structure
@@ -28,6 +28,8 @@ Current implementation is an early scaffold with a working FastAPI backend, a wo
 |   |   |   +-- routes/images.py
 |   |   |   +-- routes/health.py
 |   |   +-- core/config.py
+|   |   +-- db/database.py
+|   |   +-- db/image_repo.py
 |   |   +-- schemas/detection.py
 |   |   +-- schemas/images.py
 |   |   +-- schemas/health.py
@@ -43,6 +45,8 @@ Current implementation is an early scaffold with a working FastAPI backend, a wo
 |   |   |   +-- drone_001.jpg
 |   |   +-- masks/
 |   |   |   +-- generated temporary mask PNGs
+|   +-- data/
+|   |   +-- generated SQLite database, ignored by git
 |   +-- .env.example
 |   +-- requirements.txt
 +-- frontend/
@@ -90,6 +94,7 @@ Routes currently implemented:
 - `POST /api/detect`
 - `GET /api/images`
 - `POST /api/images`
+- `POST /api/upload`
 - `GET /api/images/{image_id}`
 
 The health routes return:
@@ -101,40 +106,54 @@ The health routes return:
 }
 ```
 
-The image list route returns available locally registered images:
+The image list route returns available SQLite-registered images:
 
 ```json
 {
   "images": [
     {
-      "image_id": "drone_image_001",
-      "filename": "drone_001.jpg",
-      "image_url": "http://localhost:8000/static/images/drone_001.jpg",
-      "width": 2048,
-      "height": 1536,
+      "image_id": "11111111-1111-4111-8111-111111111111",
+      "filename": "dji_sample_001.jpg",
+      "image_url": "http://localhost:8000/static/images/dji_sample_001.jpg",
+      "width": 5280,
+      "height": 3956,
+      "size_bytes": 10041126,
       "bounds": {
-        "north": 23.005,
-        "south": 23.0,
-        "east": 90.006,
-        "west": 90.0
+        "north": 23.782,
+        "south": 23.778,
+        "east": 90.358,
+        "west": 90.354
       }
     }
   ]
 }
 ```
 
-Image registry state:
+Image registry and storage state:
 
 - Registry module: `backend/app/services/image_registry.py`
+- SQLite database module: `backend/app/db/database.py`
+- Image repository module: `backend/app/db/image_repo.py`
+- Runtime database path: `backend/data/drone_imagery.sqlite3`
+- The FastAPI startup hook auto-creates `images` and `detections` tables.
+- Startup seeds three stable UUID DJI sample rows:
+  - `11111111-1111-4111-8111-111111111111`
+  - `22222222-2222-4222-8222-222222222222`
+  - `33333333-3333-4333-8333-333333333333`
+- Seeded sample bounds use the SRS Kafrul/Dhaka fallback: SW `[90.354, 23.778]`, NE `[90.358, 23.782]`.
 - Pydantic response models: `backend/app/schemas/images.py`
-- Registered image ID: `drone_image_001`
-- Stored file: `backend/static/images/drone_001.jpg`
-- Static URL path: `/static/images/drone_001.jpg`
-- Dimensions: `2048x1536`
-- Default map bounds: north `23.005`, south `23.000`, east `90.006`, west `90.000`
-- `POST /api/images` accepts a multipart image upload, stores it as `backend/static/images/drone_001.jpg`, converts it to JPEG, updates the registered image dimensions, and reads EXIF GPS latitude/longitude when available.
-- Uploaded images with EXIF GPS are centered on that map location by recalculating bounds around the existing image footprint size.
-- Uploaded images without EXIF GPS keep the previous image bounds.
+- Seeded sample image files are copied from checked-in `backend/static/images/drone_001.jpg` if missing.
+- `POST /api/images` and `POST /api/upload` accept multipart image uploads.
+- Uploads accept JPEG and PNG only, including `image/jpeg`, `image/jpg`, `image/pjpeg`, `image/png`, `.jpg`, `.jpeg`, and `.png`; uploads also accept readable DJI MPO-backed `.JPG` files and normalize the first frame to a standard UUID `.jpg`; uploads enforce a `50MB` maximum and return HTTP `422` with a clear reason for invalid image payloads.
+- Uploads generate a fresh UUID `image_id`.
+- Uploaded file paths use UUID filenames under `backend/static/images/` and never trust the original filename for storage paths.
+- The original filename is retained only as display metadata in the SQLite row and API response.
+- A legacy optional `display_name` field may still exist in the database/API for backward compatibility, but the frontend no longer sends or displays it.
+- Upload responses include `image_id`, `filename`, `image_url`, `width`, `height`, `size_bytes`, `bounds`, and `created_at`.
+- Uploads optionally accept `south`, `west`, `north`, and `east` form fields.
+- Manual upload bounds must be provided together and pass latitude/longitude range plus south/west/north/east ordering validation.
+- Uploads without manual bounds use the Kafrul/Dhaka fallback bounds.
+- The old Bay of Bengal/default demo fallback has been removed.
 - Exact corner-level alignment still requires true footprint metadata, such as GeoTIFF bounds, a world file, or manually provided corner coordinates.
 - Unknown image IDs return `404` from `GET /api/images/{image_id}`.
 
@@ -148,32 +167,45 @@ Detection API state:
 - SegFormer inference service: `model/segformer_service.py`
 - `POST /api/detect` accepts `image_id`, `mode`, and `confidence_threshold`.
 - `mode` is constrained to `"simulated"`, `"segformer"`, `"real"` legacy alias, or `"yolo"` and defaults to `"segformer"`.
-- The route validates `image_id` through the image registry and returns `404` for unknown image IDs.
+- The route validates `image_id` through the SQLite-backed image registry and returns `404` for unknown image IDs.
 - The request model constrains `confidence_threshold` to `0.0` through `1.0`.
 - The response mode is `"simulated"`, `"segformer"`, `"real"`, or `"yolo"`, matching the request path used.
-- The response includes `mask_url`, which is `null` for simulated detection, an absolute static PNG URL for SegFormer masks, and an absolute static PNG URL for YOLO bbox-derived overlays.
+- SegFormer responses include SRS fields: `detection_id`, `image_id`, `model_used`, `inference_time_ms`, `image_width`, `image_height`, `detections`, `mask_url`, and optional `mask_base64`.
+- SegFormer detection rows are persisted in SQLite with `detection_id`, `image_id`, `model_used`, `detections_json`, `mask_path`, `inference_time_ms`, `confidence_threshold`, and `created_at`.
+- Detection items include `label`, `confidence`, `bbox`, `pixel_area`, and `color`.
+- The response includes `mask_url`, which is `null` for simulated detection, an absolute static PNG URL for SegFormer masks under `/static/outputs/`, and an absolute static PNG URL for YOLO bbox-derived overlays.
 - Simulated detections include `building`, `vegetation`, `open_land`, and `road/path`.
 - Simulated detections are filtered by `confidence_threshold`.
 - Real detection lazy-loads SegFormer on first real request.
 - Real detection uses CPU by default when CUDA is unavailable.
-- Real detection loads `nvidia/segformer-b0-finetuned-ade-512-512` through HuggingFace Transformers.
+- Real detection loads `nvidia/segformer-b2-finetuned-ade-512-512` through HuggingFace Transformers.
+- Real detection starts a background warm-up task through the dedicated SegFormer service; warm-up failures are logged without preventing backend startup so user-facing failures still map to `503`.
+- Real detection resizes source imagery to a max side of `2048` before inference while preserving aspect ratio, then scales component boxes back to the registered image size.
 - Real detection maps useful ADE classes into readable labels: `building`, `vegetation`, `road`, and `earth/ground`.
-- Real detection converts segmentation masks into bounding boxes with OpenCV contour extraction.
+- Real detection converts segmentation masks into bounding boxes with OpenCV `connectedComponentsWithStats`, producing one bbox per valid connected component instead of one large contour per class.
+- Real detection filters tiny components and suppresses near-whole-image bbox artifacts unless the component itself covers most of the image.
 - Real detection creates a colored transparent RGBA segmentation mask from useful target classes above the confidence threshold.
-- Real mask PNGs are saved under `backend/static/masks/` and served through the existing FastAPI `/static` mount.
+- Real mask PNGs are saved under `backend/static/outputs/{detection_id}_mask.png` and served through the existing FastAPI `/static` mount.
 - Generated mask dimensions match the registered source image dimensions.
 - Real detection returns the existing detection shape inside the shared response:
 
 ```json
 {
-  "image_id": "drone_image_001",
+  "detection_id": "51208757-bd33-4ee4-b36b-008360c5a11c",
+  "image_id": "11111111-1111-4111-8111-111111111111",
   "mode": "real",
-  "mask_url": "http://localhost:8000/static/masks/drone_image_001_mask_0_50_<uuid>.png",
+  "model_used": "nvidia/segformer-b2-finetuned-ade-512-512",
+  "inference_time_ms": 52878,
+  "image_width": 5280,
+  "image_height": 3956,
+  "mask_url": "http://localhost:8000/static/outputs/51208757-bd33-4ee4-b36b-008360c5a11c_mask.png",
   "detections": [
     {
       "label": "building",
       "confidence": 0.87,
-      "bbox": [0, 0, 128, 128]
+      "bbox": [0, 0, 128, 128],
+      "pixel_area": 8192,
+      "color": "#dc2626"
     }
   ]
 }
@@ -194,9 +226,9 @@ Backend settings are in `backend/app/core/config.py`.
 - `BACKEND_CORS_ORIGINS` is read from `.env` as a comma-separated string.
 - Default allowed origin is `http://localhost:3000`.
 
-Backend dependencies are pinned in `backend/requirements.txt`.
+Backend dependencies are pinned in `backend/requirements.txt`, including `aiosqlite==0.20.0`.
 
-Important current limitation: the backend still does not persist uploaded-file metadata beyond the local static replacement image. The only registry record currently available is `drone_image_001`. Real detection works, but the first run requires downloading the HuggingFace model unless it already exists in the local model cache.
+Important current limitation: uploaded imagery now persists in SQLite and filesystem storage, but exact georeferenced upload footprints still require manual bounds or future GeoTIFF/world-file parsing. Real detection works, but the first run requires downloading the HuggingFace model unless it already exists in the local model cache.
 
 ## Frontend State
 
@@ -207,11 +239,16 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 - Dynamically loads `frontend/components/map/DroneMap.tsx` with SSR disabled.
 - Calls the backend health endpoint on mount through `getHealth()`.
 - Calls the backend image registry endpoint on mount through `getImages()`.
-- Uploads a replacement drone image through `uploadDroneImage()`.
+- Uploads a drone image through `uploadDroneImage()` using multipart `FormData`.
 - Runs SegFormer detection through `runDetection()` by default.
 - Shows backend online/offline state in the header.
 - Shows an image workflow sidebar with available registered images.
-- Shows an upload control that replaces the current demo image.
+- Shows an SRS FR-UPLOAD-01 drag-and-drop upload zone powered by `react-dropzone`.
+- Upload drop zone accepts JPEG/PNG only and enforces the 50MB maximum before sending.
+- Upload drop zone shows user-friendly validation errors for oversized and unsupported files.
+- Successful uploads show `filename`, `image_id`, file size, and a thumbnail preview in a compact non-overflowing card.
+- The Available Imagery dropdown shows all registered images, including uploaded images and the three seeded DJI images, sorted by `created_at` newest first.
+- Available Imagery option labels use `filename - short_image_id`; the selected image details panel shows full `filename` and full `image_id`.
 - Shows a vertically stacked detection mode selector for `Simulated`, `SegFormer`, and `YOLOv8s` so labels do not overlap in the narrow sidebar.
 - Shows a confidence threshold slider from `0.10` to `0.95` and a `Run Detection` button.
 - Shows a `Show segmentation mask` checkbox that becomes useful when a real detection response includes `mask_url`.
@@ -226,7 +263,7 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 - Shows a right-side image details panel with `image_id`, image size, and image bounds.
 - Shows detection results in the right-side panel with label, confidence, pixel bbox, current mode, and number of detections returned.
 - Shows an `Export GeoJSON` button when detections are available.
-- Exports current detections as `detections_<image_id>.geojson`, for example `detections_drone_image_001.geojson`.
+- Exports current detections as `detections_<image_id>.geojson`, for example `detections_11111111-1111-4111-8111-111111111111.geojson`.
 - Displays detection status messages that include the response mode.
 - Shows a better empty result state: `No detections found above this threshold.`
 - Shows backend/model error states using backend `detail` text when available.
@@ -281,9 +318,12 @@ The map components:
 - Exposes `getHealth()` for `GET /health`.
 - Exposes typed image metadata models and `getImages()` for `GET /api/images`.
 - Exposes `uploadDroneImage()` for multipart `POST /api/images`.
+- Upload helper appends the file with key `file` and only appends bounds if provided.
+- Image metadata now includes `size_bytes` and `created_at`; `display_name` remains optional legacy response data only.
 - Exposes typed detection models and `runDetection()` for `POST /api/detect`.
 - Detection response mode type is `"simulated" | "segformer" | "yolo" | "real"`.
-- Detection responses include `mask_url: string | null`.
+- Detection responses include `detection_id`, `model_used`, `inference_time_ms`, `image_width`, `image_height`, `mask_url`, and optional `mask_base64`.
+- Detection items include optional `pixel_area` and `color` fields for SegFormer component results.
 - `runDetection()` accepts an optional mode and sends `"segformer"` by default.
 - `runDetection()` sends both `mode` and `confidence_threshold`.
 - Detection API error responses parse backend `detail` when available.
@@ -313,12 +353,17 @@ Current model-facing files:
 
 `model/segformer_service.py`:
 
-- Defines the SegFormer model name as `nvidia/segformer-b0-finetuned-ade-512-512`.
+- Defines the SegFormer model name as `nvidia/segformer-b2-finetuned-ade-512-512`.
 - Lazy-loads `SegformerImageProcessor` and `SegformerForSemanticSegmentation`.
+- Preserves thread-safe model loading with a lock.
+- Provides a warm-up call that loads the model and runs a tiny dummy inference.
 - Uses `cuda` when available and CPU otherwise.
 - Runs semantic segmentation with Torch no-grad inference.
+- Resizes input imagery to a max side of `2048` while preserving aspect ratio before inference.
+- Uses `processor.post_process_semantic_segmentation(outputs, target_sizes=[(H, W)])`.
 - Maps raw class IDs to useful readable labels.
-- Extracts contours with OpenCV and converts mask regions into bounding boxes.
+- Uses OpenCV `connectedComponentsWithStats` to emit one bbox per valid connected component.
+- Filters tiny components and suppresses near-whole-image bbox artifacts unless component coverage is also very high.
 - Builds a transparent RGBA mask image for useful target classes above the requested confidence threshold.
 - Resizes the mask image to the registered drone image dimensions with nearest-neighbor sampling.
 - Keeps only boxes above the requested confidence threshold.
@@ -360,15 +405,15 @@ Expected local URLs:
 - Frontend: `http://localhost:3000`
 - Backend health: `http://localhost:8000/health`
 - Image registry: `http://localhost:8000/api/images`
-- Static sample image: `http://localhost:8000/static/images/drone_001.jpg`
+- Static seeded sample images: `http://localhost:8000/static/images/dji_sample_001.jpg`, `dji_sample_002.jpg`, and `dji_sample_003.jpg`
 - Backend docs: `http://localhost:8000/docs`
-- Generated real detection masks: `http://localhost:8000/static/masks/<mask_filename>.png`
+- Generated real detection masks: `http://localhost:8000/static/outputs/<detection_id>_mask.png`
 
 Detection examples:
 
 ```json
 {
-  "image_id": "drone_image_001",
+  "image_id": "11111111-1111-4111-8111-111111111111",
   "mode": "real",
   "confidence_threshold": 0.5
 }
@@ -378,22 +423,30 @@ Real detection response example:
 
 ```json
 {
-  "image_id": "drone_image_001",
+  "detection_id": "51208757-bd33-4ee4-b36b-008360c5a11c",
+  "image_id": "11111111-1111-4111-8111-111111111111",
   "mode": "real",
+  "model_used": "nvidia/segformer-b2-finetuned-ade-512-512",
+  "inference_time_ms": 52878,
+  "image_width": 5280,
+  "image_height": 3956,
   "detections": [
     {
       "label": "building",
       "confidence": 0.87,
-      "bbox": [0, 0, 128, 128]
+      "bbox": [0, 0, 128, 128],
+      "pixel_area": 8192,
+      "color": "#dc2626"
     }
   ],
-  "mask_url": "http://localhost:8000/static/masks/drone_image_001_mask_0_50_<uuid>.png"
+  "mask_url": "http://localhost:8000/static/outputs/51208757-bd33-4ee4-b36b-008360c5a11c_mask.png",
+  "mask_base64": null
 }
 ```
 
 ```json
 {
-  "image_id": "drone_image_001",
+  "image_id": "11111111-1111-4111-8111-111111111111",
   "mode": "simulated",
   "confidence_threshold": 0.5
 }
@@ -422,7 +475,7 @@ Exported GeoJSON example:
       "properties": {
         "label": "building",
         "confidence": 0.91,
-        "image_id": "drone_image_001",
+        "image_id": "11111111-1111-4111-8111-111111111111",
         "mode": "simulated"
       }
     }
@@ -442,26 +495,41 @@ Exported GeoJSON example:
 - `POST /api/detect` `mode` field with `"simulated"`, `"segformer"`, `"real"`, and `"yolo"` support.
 - `POST /api/detect` includes `mask_url` in responses.
 - `GET /api/images` image registry endpoint.
-- `POST /api/images` replacement image upload endpoint.
+- `POST /api/images` persistent image upload endpoint.
+- `POST /api/upload` persistent image upload endpoint alias.
 - `GET /api/images/{image_id}` image lookup endpoint with `404` handling.
 - Pydantic image response schemas.
 - Pydantic detection request and response schemas.
-- Local image registry service.
+- SQLite-backed image registry service.
+- SQLite-backed `images` and `detections` tables auto-created on backend startup.
+- Image repository layer in `backend/app/db/image_repo.py`.
+- Three stable UUID seeded DJI sample image records using Kafrul/Dhaka fallback bounds.
+- Filesystem image storage for uploads under `backend/static/images/`.
+- UUID-based saved filenames for uploaded images.
+- JPEG/PNG-only upload validation with `422` invalid-image errors.
+- `50MB` upload limit.
+- Legacy optional upload `display_name` compatibility in the backend, unused by the frontend.
+- Optional manual upload bounds fields: `south`, `west`, `north`, and `east`.
 - Simulated detection service with registry validation and confidence filtering.
 - SegFormer detection wrapper service with registry validation and service error mapping.
-- SegFormer model service with lazy model loading, CPU-safe execution, ADE label mapping, confidence filtering, and OpenCV contour-to-bbox extraction.
-- SegFormer mask PNG generation for useful ADE-derived classes.
+- SegFormer-B2 model service with lazy thread-safe model loading, CPU-safe execution, ADE label mapping, confidence filtering, and OpenCV connected-component bbox extraction.
+- SegFormer input resizing to max side `2048` before inference.
+- SegFormer semantic map resizing through `processor.post_process_semantic_segmentation`.
+- SegFormer component detections with `pixel_area` and `color`.
+- SegFormer mask PNG generation under `backend/static/outputs/{detection_id}_mask.png`.
+- SegFormer detection persistence in SQLite `detections`.
+- SegFormer background startup warm-up through a tiny dummy inference.
 - YOLOv8s tiled inference with class filtering and bbox-derived overlay generation.
 - Shared bbox NMS utility and shared overlay save/render utility.
 - Static serving for generated mask PNGs through `/static/masks/...`.
 - Clear `503` API errors when SegFormer loading or inference fails.
 - Static file serving at `/static`.
-- One registered sample drone image: `drone_image_001`.
 - Backend CORS support.
 - Next.js frontend with TypeScript and Tailwind CSS.
 - Frontend health check against the backend.
 - Frontend image registry fetch through `GET /api/images`.
-- Frontend drone image upload that replaces `backend/static/images/drone_001.jpg`.
+- Frontend drone image upload through persistent backend storage.
+- Frontend drag-and-drop upload zone with `react-dropzone`, JPEG/PNG acceptance, 50MB client validation, thumbnail preview, compact uploaded-image metadata summary, and no `display_name` UI.
 - Frontend SegFormer detection request through `POST /api/detect` by default, with typed support for simulated and YOLO modes.
 - Frontend detection mode selector for `Simulated`, `SegFormer`, and `YOLOv8s`.
 - Frontend confidence threshold slider constrained to `0.10` through `0.95`.
@@ -494,15 +562,13 @@ Exported GeoJSON example:
 - Masks metric based on current mask availability.
 - `.gitignore` excludes `model/.cache/` so downloaded model artifacts are not committed.
 - `.gitignore` excludes `backend/static/masks/` so generated mask PNGs are not committed.
+- `.gitignore` excludes `backend/static/outputs/` so generated SegFormer output PNGs are not committed.
+- `.gitignore` excludes generated backend SQLite data and UUID upload files.
 
 ## Not Implemented Yet
 
-- Multiple image upload records.
-- User-uploaded file metadata persistence beyond replacing the local static image.
 - Exact georeferenced upload footprints from GeoTIFF/world-file/manual corner coordinates.
 - Segmentation endpoint.
-- Result history.
-- Database.
 - Authentication.
 - Tests.
 - Configurable model/cache settings through backend environment variables.
@@ -516,7 +582,7 @@ Exported GeoJSON example:
 Recommended next implementation steps:
 
 1. Add tests for health, image registry responses, upload validation, unknown image IDs, static serving, simulated detection filtering, frontend image loading states, and prediction response formatting.
-2. Add configurable map bounds for uploaded images instead of reusing the default sample bounds.
+2. Add GeoTIFF/world-file parsing for exact upload footprints.
 3. Add tests for mode selector UI behavior, confidence threshold payloads, zero-detection state, and backend/model error display.
 4. Add tests for real detection `mask_url`, generated mask dimensions, static mask serving, and frontend mask overlay toggling.
 5. Add tests for GeoJSON export filename, FeatureCollection shape, closed polygon rings, and required feature properties.
@@ -532,7 +598,7 @@ If starting from a new chat, tell Codex to read this file first, then inspect th
 The project is currently in scaffold stage. The main architectural intent is:
 
 - Keep FastAPI routes thin.
-- Keep local image metadata in the registry service until a real database is introduced.
+- Keep image metadata access behind the registry service and repository layer.
 - Keep model loading and inference in the dedicated model/backend service layers.
 - Use typed schemas for all API responses.
 - Keep the frontend map component focused on visualization.
@@ -552,14 +618,38 @@ The project is currently in scaffold stage. The main architectural intent is:
 
 ## Verification Notes
 
-Recent checks after map hydration and documentation updates:
+Recent checks after SegFormer-B2 SRS pipeline update:
 
 - Backend compile check passed with `.venv\Scripts\python.exe -m compileall app ..\model`.
 - Frontend TypeScript check passed with `.\node_modules\.bin\tsc.cmd --noEmit --incremental false`.
+- Upload endpoint verification passed with a real multipart request using field name `file`.
+- JPEG upload to `POST /api/upload` returned `200`, a fresh UUID `image_id`, UUID-based stored filename URL, image dimensions, file size, `created_at`, and fallback Kafrul/Dhaka bounds.
+- PNG upload to `POST /api/upload` returned `200`, a fresh UUID `image_id`, UUID-based stored filename URL, image dimensions, file size, `created_at`, and fallback Kafrul/Dhaka bounds.
+- Unsupported text upload to `POST /api/upload` returned `422` with detail explaining JPEG/PNG and `.jpg/.jpeg/.png` requirements.
+- File larger than `50MB` was rejected with HTTP `422` and detail `Uploaded image exceeds the 50MB limit.`
+- A DJI `.JPG` file detected by Pillow as `MPO` uploaded successfully and was normalized to a standard saved JPEG with UUID filename.
+- Uploaded images appeared in `GET /api/images`, and the three seeded DJI images still returned readable display names.
+- Simulated detection worked against a freshly uploaded image ID, confirming `image_id` remains the detection identifier after upload.
+- Available Imagery sorting was verified with all images visible, a new upload appearing first, seeded DJI images still present, and older records remaining selectable.
+- Backend startup succeeded and the SegFormer warm-up path ran without blocking health once startup completed.
+- `POST /api/detect` accepted JSON containing only `image_id` and `confidence_threshold`, using default `mode: "segformer"`.
+- SegFormer response returned `model_used: "nvidia/segformer-b2-finetuned-ade-512-512"`.
+- SegFormer response included SRS fields: `detection_id`, `image_id`, `model_used`, `inference_time_ms`, `image_width`, `image_height`, `detections`, `mask_url`, and `mask_base64`.
+- SegFormer component detections included `label`, `confidence`, `bbox`, `pixel_area`, and `color`.
+- SegFormer returned multiple component bboxes; they did not all span the full image.
+- SegFormer mask URL served an actual PNG from `/static/outputs/...` with `200`, `image/png`, and nonzero byte length.
+- Latest detection row appeared in SQLite with detection ID, image ID, model name, inference time, confidence threshold, mask path, and serialized detections JSON.
+- Warmed CPU SegFormer-B2 inference on the full seeded sample measured about `52.9s`; model load is moved to startup warm-up, but this local CPU path remains above the SRS 10s target without GPU acceleration or a lower inference max side.
+- Backend requirements sync passed with `.venv\Scripts\python.exe -m pip install -r requirements.txt` after installing `aiosqlite==0.20.0`.
+- Backend `uvicorn app.main:app --host 127.0.0.1 --port 8000` startup succeeded and auto-created the SQLite database.
+- `GET /api/images` returned the three seeded sample images with stable UUIDs and Kafrul/Dhaka bounds.
+- `POST /api/upload` accepted a JPEG upload, returned a fresh UUID, and saved the image with a UUID filename instead of the original filename.
+- Invalid non-image upload to `POST /api/upload` returned HTTP `422`.
+- Simulated detection still returned detections for a seeded image ID.
 - Frontend production build passed with `npm.cmd run build`.
 - Simulated route dispatch returned expected filtered detections and `mask_url: null`.
-- Real SegFormer inference ran successfully for `drone_image_001`, returned model-generated detections, and returned a static `mask_url`.
-- YOLOv8s tiled inference ran successfully for `drone_image_001`, returned detections through `mode: "yolo"`, and returned a bbox-derived overlay `mask_url`.
+- Real SegFormer inference ran successfully for `11111111-1111-4111-8111-111111111111`, returned model-generated detections, and returned a static `mask_url`.
+- YOLOv8s tiled inference ran successfully for `11111111-1111-4111-8111-111111111111`, returned detections through `mode: "yolo"`, and returned a bbox-derived overlay `mask_url`.
 - YOLOv8s overlay was verified as `2048x1536 RGBA`.
 - Generated real mask was served successfully from `/static/masks/...` with content type `image/png`.
 - Generated real mask was verified as `2048x1536 RGBA`.

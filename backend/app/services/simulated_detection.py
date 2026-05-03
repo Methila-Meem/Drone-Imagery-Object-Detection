@@ -14,11 +14,11 @@ _SIMULATED_DETECTIONS = [
 ]
 
 
-def run_simulated_detection(
+async def run_simulated_detection(
     image_id: str, confidence_threshold: float
 ) -> DetectionResponse:
     try:
-        image = get_image(image_id)
+        image = await get_image(image_id)
     except UnknownImageError:
         raise
 

@@ -1,4 +1,6 @@
 from pathlib import Path
+import asyncio
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,10 +8,13 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.services.image_registry import initialize_image_registry
+from app.services.segformer_detection import warm_up_segformer
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 STATIC_DIR = BASE_DIR / "static"
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -30,7 +35,20 @@ def create_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(api_router)
+
+    @app.on_event("startup")
+    async def startup() -> None:
+        await initialize_image_registry()
+        asyncio.create_task(_warm_up_segformer_background())
+
     return app
 
 
 app = create_app()
+
+
+async def _warm_up_segformer_background() -> None:
+    try:
+        await asyncio.to_thread(warm_up_segformer)
+    except Exception as exc:
+        logger.warning("SegFormer background warm-up failed: %s", exc)

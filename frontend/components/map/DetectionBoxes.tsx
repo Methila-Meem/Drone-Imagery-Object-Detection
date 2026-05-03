@@ -44,16 +44,17 @@ function DetectionBoxesComponent({ detections, image }: DetectionBoxesProps) {
     <>
       {detectionBounds.map(({ detection, bounds, key }) => {
         const style = detectionStyles[detection.label] ?? {
-          color: "#0f766e",
+          color: detection.color ?? "#0f766e",
           fillColor: "#99f6e4"
         };
+        const color = detection.color ?? style.color;
 
         return (
           <Rectangle
             bounds={bounds}
             key={key}
             pathOptions={{
-              color: style.color,
+              color,
               fillColor: style.fillColor,
               fillOpacity: 0.18,
               weight: 2

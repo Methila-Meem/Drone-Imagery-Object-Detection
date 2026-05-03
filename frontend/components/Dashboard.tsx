@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
+import { useDropzone, type FileRejection } from "react-dropzone";
 import { buildDetectionGeoJson } from "@/lib/geojson";
 import {
   getHealth,
@@ -11,7 +12,8 @@ import {
   type Detection,
   type DetectionMode,
   type HealthResponse,
-  type ImageMetadata
+  type ImageMetadata,
+  type UploadImageOptions
 } from "@/lib/api";
 
 const DroneMap = dynamic(() => import("@/components/map/DroneMap"), {
@@ -57,6 +59,14 @@ const detectionModeOptions = [
   "yolo"
 ] as const satisfies readonly DetectionMode[];
 
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const ACCEPTED_UPLOAD_TYPES = {
+  "image/jpeg": [".jpg", ".jpeg"],
+  "image/jpg": [".jpg", ".jpeg"],
+  "image/pjpeg": [".jpg", ".jpeg"],
+  "image/png": [".png"]
+};
+
 export function Dashboard() {
   const [backend, setBackend] = useState<BackendState>({
     status: "loading",
@@ -72,6 +82,8 @@ export function Dashboard() {
     message: null
   });
   const [imageRevision, setImageRevision] = useState<number>(0);
+  const [lastUploadedImage, setLastUploadedImage] =
+    useState<ImageMetadata | null>(null);
   const [detectionMode, setDetectionMode] = useState<DetectionMode>("segformer");
   const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0.5);
   const [detections, setDetections] = useState<Detection[]>([]);
@@ -120,8 +132,9 @@ export function Dashboard() {
           return;
         }
 
-        setImagesState({ status: "ready", images: data.images });
-        setSelectedImageId(data.images[0]?.image_id ?? null);
+        const sortedImages = sortImagesNewestFirst(data.images);
+        setImagesState({ status: "ready", images: sortedImages });
+        setSelectedImageId(sortedImages[0]?.image_id ?? null);
       })
       .catch((error: unknown) => {
         if (isMounted) {
@@ -142,6 +155,7 @@ export function Dashboard() {
 
   const isOnline = backend.status === "online";
   const images = imagesState.status === "ready" ? imagesState.images : [];
+  const sortedImages = useMemo(() => sortImagesNewestFirst(images), [images]);
   const selectedImageBase =
     images.find((image) => image.image_id === selectedImageId) ?? null;
   const selectedImage = useMemo(() => {
@@ -158,14 +172,14 @@ export function Dashboard() {
     };
   }, [imageRevision, selectedImageBase]);
 
-  const handleUpload = async (file: File) => {
+  const handleUpload = async (file: File, options?: UploadImageOptions) => {
     setUploadState({
       status: "uploading",
-      message: "Uploading replacement image"
+      message: "Uploading image"
     });
 
     try {
-      const uploadedImage = await uploadDroneImage(file);
+      const uploadedImage = await uploadDroneImage(file, options);
       setImagesState((currentState) => {
         if (currentState.status !== "ready") {
           return { status: "ready", images: [uploadedImage] };
@@ -190,6 +204,7 @@ export function Dashboard() {
         };
       });
       setSelectedImageId(uploadedImage.image_id);
+      setLastUploadedImage(uploadedImage);
       setImageRevision((currentRevision) => currentRevision + 1);
       setDetections([]);
       setMaskUrl(null);
@@ -197,7 +212,7 @@ export function Dashboard() {
       setDetectionState({ status: "idle", message: null });
       setUploadState({
         status: "success",
-        message: "Drone image replaced"
+        message: "Image uploaded"
       });
     } catch (error: unknown) {
       setUploadState({
@@ -328,11 +343,12 @@ export function Dashboard() {
             <h2 className="text-lg font-semibold text-ink">Image workflow</h2>
             <div className="mt-4 space-y-3">
               <ImageUpload
+                uploadedImage={lastUploadedImage}
                 state={uploadState}
                 onUpload={handleUpload}
               />
               <ImageSelector
-                images={images}
+                images={sortedImages}
                 selectedImageId={selectedImageId}
                 status={imagesState}
                 onSelect={(imageId) => {
@@ -448,7 +464,7 @@ function ImageSelector({
       >
         {images.map((image) => (
           <option key={image.image_id} value={image.image_id}>
-            {image.image_id}
+            {formatImageOptionLabel(image)}
           </option>
         ))}
       </select>
@@ -457,35 +473,139 @@ function ImageSelector({
 }
 
 function ImageUpload({
+  uploadedImage,
   state,
   onUpload
 }: {
+  uploadedImage: ImageMetadata | null;
   state: UploadState;
-  onUpload: (file: File) => Promise<void>;
+  onUpload: (file: File, options?: UploadImageOptions) => Promise<void>;
 }) {
   const isUploading = state.status === "uploading";
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [clientError, setClientError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedFile) {
+      setPreviewUrl(null);
+      return;
+    }
+
+    const nextPreviewUrl = URL.createObjectURL(selectedFile);
+    setPreviewUrl(nextPreviewUrl);
+
+    return () => {
+      URL.revokeObjectURL(nextPreviewUrl);
+    };
+  }, [selectedFile]);
+
+  const handleAcceptedFile = (file: File) => {
+    setSelectedFile(file);
+    setClientError(null);
+  };
+
+  const handleRejectedFiles = (rejections: FileRejection[]) => {
+    const firstError = rejections[0]?.errors[0];
+    if (!firstError) {
+      setClientError("Upload a JPEG or PNG image up to 50MB.");
+      return;
+    }
+
+    if (firstError.code === "file-too-large") {
+      setClientError("Image must be 50MB or smaller.");
+      return;
+    }
+
+    if (firstError.code === "file-invalid-type") {
+      setClientError("Only JPEG and PNG images are supported.");
+      return;
+    }
+
+    setClientError(firstError.message);
+  };
+
+  const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
+    accept: ACCEPTED_UPLOAD_TYPES,
+    disabled: isUploading,
+    maxFiles: 1,
+    maxSize: MAX_UPLOAD_BYTES,
+    multiple: false,
+    noClick: true,
+    onDropAccepted: ([file]) => {
+      if (file) {
+        handleAcceptedFile(file);
+      }
+    },
+    onDropRejected: handleRejectedFiles
+  });
+
+  const handleSubmit = () => {
+    if (!selectedFile) {
+      setClientError("Choose a JPEG or PNG image before uploading.");
+      return;
+    }
+
+    void onUpload(selectedFile);
+  };
 
   return (
     <div className="rounded border border-line bg-slate-50 p-4">
-      <label className="block">
-        <span className="text-sm font-medium text-ink">
-          Upload drone image
-        </span>
-        <input
-          accept="image/*"
-          className="mt-2 block w-full text-sm text-muted file:mr-3 file:rounded file:border-0 file:bg-accent file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
+      <p className="text-sm font-medium text-ink">Upload drone image</p>
+      <div
+        {...getRootProps({
+          className: `mt-2 flex min-h-32 cursor-pointer flex-col items-center justify-center rounded border border-dashed px-4 py-5 text-center transition ${
+            isDragActive
+              ? "border-accent bg-teal-50"
+              : "border-line bg-white hover:border-accent"
+          } ${isUploading ? "cursor-not-allowed opacity-60" : ""}`
+        })}
+      >
+        <input {...getInputProps()} />
+        <p className="text-sm font-semibold text-ink">
+          {isDragActive ? "Drop image here" : "Drag and drop JPEG or PNG"}
+        </p>
+        <p className="mt-1 text-xs text-muted">Maximum file size: 50MB</p>
+        <button
+          className="mt-3 rounded border border-line bg-white px-3 py-2 text-sm font-semibold text-ink transition hover:bg-slate-50 disabled:cursor-not-allowed"
           disabled={isUploading}
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0];
-            event.currentTarget.value = "";
-
-            if (file) {
-              void onUpload(file);
-            }
-          }}
-          type="file"
-        />
-      </label>
+          onClick={open}
+          type="button"
+        >
+          Browse image
+        </button>
+      </div>
+      {selectedFile ? (
+        <div className="mt-3 rounded border border-line bg-white p-3">
+          <div className="flex gap-3">
+            {previewUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                alt=""
+                className="h-16 w-16 rounded object-cover"
+                src={previewUrl}
+              />
+            ) : null}
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-ink">
+                {selectedFile.name}
+              </p>
+              <p className="mt-1 text-xs text-muted">
+                {formatBytes(selectedFile.size)}
+              </p>
+            </div>
+          </div>
+          <button
+            className="mt-3 min-h-10 w-full rounded bg-accent px-3 py-2 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isUploading}
+            onClick={handleSubmit}
+            type="button"
+          >
+            {isUploading ? "Uploading" : "Upload image"}
+          </button>
+        </div>
+      ) : null}
+      {clientError ? <p className="mt-2 text-sm text-rose-700">{clientError}</p> : null}
       {state.message ? (
         <p
           className={`mt-2 text-sm ${
@@ -494,6 +614,35 @@ function ImageUpload({
         >
           {state.message}
         </p>
+      ) : null}
+      {uploadedImage && state.status === "success" ? (
+        <div className="mt-3 overflow-hidden rounded border border-emerald-200 bg-emerald-50 p-3">
+          <div className="flex min-w-0 gap-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              alt=""
+              className="h-14 w-14 flex-none rounded object-cover"
+              src={uploadedImage.image_url}
+            />
+            <div className="min-w-0 flex-1 text-sm leading-tight">
+              <p
+                className="truncate font-semibold text-emerald-950"
+                title={uploadedImage.filename}
+              >
+                {uploadedImage.filename}
+              </p>
+              <p
+                className="mt-1 truncate font-mono text-xs text-emerald-800"
+                title={uploadedImage.image_id}
+              >
+                {uploadedImage.image_id}
+              </p>
+              <p className="mt-1 truncate text-xs text-emerald-800">
+                {formatBytes(uploadedImage.size_bytes)}
+              </p>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );
@@ -653,6 +802,7 @@ function ImageDetails({ image }: { image: ImageMetadata | null }) {
 
   return (
     <dl className="mt-4 space-y-4">
+      <DetailRow label="Filename" value={image.filename} />
       <DetailRow label="image_id" value={image.image_id} />
       <DetailRow label="Image size" value={`${image.width} x ${image.height}`} />
       <div>
@@ -766,6 +916,39 @@ function formatDetectionMode(mode: DetectionMode): string {
   }
 
   return "Simulated";
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
+function sortImagesNewestFirst(images: ImageMetadata[]): ImageMetadata[] {
+  return [...images]
+    .sort(
+      (first, second) =>
+        Date.parse(second.created_at) - Date.parse(first.created_at)
+    );
+}
+
+function formatImageOptionLabel(image: ImageMetadata): string {
+  return `${image.filename} - ${shortImageId(image.image_id)}`;
+}
+
+function shortImageId(imageId: string): string {
+  return imageId.slice(0, 8);
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {

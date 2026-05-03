@@ -19,22 +19,22 @@ async def detect_objects(
 ) -> DetectionResponse:
     try:
         if detection_request.mode == "simulated":
-            return run_simulated_detection(
+            return await run_simulated_detection(
                 image_id=detection_request.image_id,
                 confidence_threshold=detection_request.confidence_threshold,
             )
 
         if detection_request.mode == "yolo":
-            return run_yolo_detection(
+            return await run_yolo_detection(
                 image_id=detection_request.image_id,
                 confidence_threshold=detection_request.confidence_threshold,
                 mask_url_base=str(request.url_for("static", path="masks")),
             )
 
-        return run_real_detection(
+        return await run_real_detection(
             image_id=detection_request.image_id,
             confidence_threshold=detection_request.confidence_threshold,
-            mask_url_base=str(request.url_for("static", path="masks")),
+            mask_url_base=str(request.url_for("static", path="outputs")),
             response_mode=detection_request.mode,
         )
     except UnknownImageError as exc:

@@ -8,7 +8,11 @@ from PIL import Image, ImageOps
 
 from app.schemas.detection import DetectionResponse, DetectionResult
 from app.services.bbox_utils import non_max_suppression
-from app.services.image_registry import STATIC_IMAGES_DIR, UnknownImageError, get_image
+from app.services.image_registry import (
+    UnknownImageError,
+    get_image,
+    get_static_image_path,
+)
 from app.services.overlay_utils import (
     build_detection_overlay,
     build_static_url,
@@ -75,17 +79,17 @@ class YOLODetectionError(RuntimeError):
     pass
 
 
-def run_yolo_detection(
+async def run_yolo_detection(
     image_id: str,
     confidence_threshold: float,
     mask_url_base: str | None = None,
 ) -> DetectionResponse:
     try:
-        image = get_image(image_id)
+        image = await get_image(image_id)
     except UnknownImageError:
         raise
 
-    image_path = STATIC_IMAGES_DIR / image.filename
+    image_path = get_static_image_path(image)
     model = _load_yolo_model()
     device = _get_torch_device()
     source_image = _open_source_image(image_path)

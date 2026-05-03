@@ -6,6 +6,7 @@ from PIL import Image, ImageDraw
 from app.schemas.detection import DetectionResult
 
 STATIC_MASKS_DIR = Path(__file__).resolve().parents[2] / "static" / "masks"
+STATIC_OUTPUTS_DIR = Path(__file__).resolve().parents[2] / "static" / "outputs"
 
 
 def save_overlay_image(
@@ -26,6 +27,17 @@ def save_overlay_image(
     image.save(temp_path, format="PNG")
     temp_path.replace(target_path)
     return f"{subdir}/{filename}" if subdir else filename
+
+
+def save_detection_mask(detection_id: str, image: Image.Image) -> str:
+    STATIC_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{detection_id}_mask.png"
+    temp_path = STATIC_OUTPUTS_DIR / f"{filename}.uploading"
+    target_path = STATIC_OUTPUTS_DIR / filename
+
+    image.save(temp_path, format="PNG")
+    temp_path.replace(target_path)
+    return filename
 
 
 def build_static_url(static_url_base: str | None, path: str) -> str | None:

@@ -23,4 +23,11 @@ out/
 # Model artifacts
 model/.cache/
 backend/static/masks/
+backend/static/outputs/
 *.pt
+
+# Backend runtime storage
+backend/data/
+backend/static/images/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*.jpg
+backend/static/images/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*.png
+backend/static/images/dji_sample_*.jpg
