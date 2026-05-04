@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     app_name: str = "Drone Imagery Segmentation API"
     environment: str = "development"
     backend_cors_origins_raw: str = Field(
-        default="http://localhost:3000",
+        default="http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001",
         alias="BACKEND_CORS_ORIGINS",
     )
 

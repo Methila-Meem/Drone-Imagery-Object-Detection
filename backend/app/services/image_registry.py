@@ -8,6 +8,7 @@ from uuid import uuid4
 from PIL import ExifTags, Image, ImageOps, UnidentifiedImageError
 
 from app.db.database import get_connection, initialize_database
+from app.db.image_repo import delete_legacy_images_except
 from app.db.image_repo import ImageRecord, get_image as repo_get_image
 from app.db.image_repo import list_images as repo_list_images
 from app.db.image_repo import upsert_image
@@ -94,6 +95,7 @@ def _utc_now() -> str:
 
 async def initialize_image_registry() -> None:
     await initialize_database()
+    await cleanup_legacy_image_records()
     await seed_sample_images()
 
 
@@ -126,9 +128,21 @@ async def seed_sample_images() -> None:
                     north=FALLBACK_BOUNDS.north,
                     east=FALLBACK_BOUNDS.east,
                     created_at=f"2026-01-01T00:00:0{len(filename) % 3}Z",
+                    source="seed",
                 ),
             )
         await connection.commit()
+    finally:
+        await connection.close()
+
+
+async def cleanup_legacy_image_records() -> int:
+    seed_image_ids = {image_id for image_id, *_ in SAMPLE_IMAGES}
+    connection = await get_connection()
+    try:
+        removed_count = await delete_legacy_images_except(connection, seed_image_ids)
+        await connection.commit()
+        return removed_count
     finally:
         await connection.close()
 
@@ -220,6 +234,7 @@ async def register_uploaded_image(
         north=image_bounds.north,
         east=image_bounds.east,
         created_at=_utc_now(),
+        source="upload",
     )
 
     connection = await get_connection()
@@ -288,7 +303,7 @@ def _record_to_registered_image(record: ImageRecord) -> RegisteredImage:
             south=record.south,
             west=record.west,
             north=record.north,
-            east=record.east,
+        east=record.east,
         ),
         created_at=record.created_at,
     )

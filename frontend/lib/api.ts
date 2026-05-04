@@ -53,6 +53,33 @@ export type DetectionResponse = {
   mask_base64?: string | null;
 };
 
+export type DetectionHistoryItem = {
+  detection_id: string;
+  image_id: string;
+  timestamp: string;
+  filename: string;
+  image_url: string;
+  image_width: number;
+  image_height: number;
+  bounds: MapBounds;
+  mode: DetectionMode;
+  model_used: string;
+  class_count: number;
+  detected_classes: string[];
+  inference_time_ms: number | null;
+  confidence_threshold: number;
+  detections: Detection[];
+  mask_url: string | null;
+  created_at: string;
+};
+
+export type DetectionHistoryResponse = {
+  history: DetectionHistoryItem[];
+  page: number;
+  page_size: number;
+  total: number;
+};
+
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -100,7 +127,7 @@ export async function uploadDroneImage(
     appendOptionalNumber(formData, "east", options.bounds.east);
   }
 
-  const response = await fetch(`${API_BASE_URL}/api/images`, {
+  const response = await fetch(`${API_BASE_URL}/api/upload`, {
     method: "POST",
     body: formData,
     cache: "no-store"
@@ -153,6 +180,59 @@ export async function runDetection({
   }
 
   return response.json() as Promise<DetectionResponse>;
+}
+
+export async function getDetectionHistory(): Promise<DetectionHistoryResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/history`, {
+    headers: {
+      Accept: "application/json"
+    },
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error(`Detection history request failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<DetectionHistoryResponse>;
+}
+
+export async function downloadDetectionGeoJson(
+  detectionId: string
+): Promise<Blob> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/export/geojson/${encodeURIComponent(detectionId)}`,
+    {
+      headers: {
+        Accept: "application/geo+json, application/json"
+      },
+      cache: "no-store"
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(await getApiErrorMessage(response, "GeoJSON export failed"));
+  }
+
+  return response.blob();
+}
+
+export async function deleteDetectionHistoryItem(
+  detectionId: string
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/history/${encodeURIComponent(detectionId)}`,
+    {
+      method: "DELETE",
+      cache: "no-store"
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      await getApiErrorMessage(response, "Detection history delete failed")
+    );
+  }
 }
 
 async function getApiErrorMessage(

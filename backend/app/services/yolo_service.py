@@ -1,6 +1,8 @@
 import logging
+import json
 import os
 import time
+from datetime import UTC, datetime
 from uuid import uuid4
 from pathlib import Path
 from threading import Lock
@@ -8,6 +10,8 @@ from typing import Any
 
 from PIL import Image, ImageOps
 
+from app.db.database import get_connection
+from app.db.detection_repo import DetectionRecord, insert_detection
 from app.schemas.detection import DetectionResponse, DetectionResult
 from app.services.bbox_utils import non_max_suppression
 from app.services.image_registry import (
@@ -114,6 +118,14 @@ async def run_yolo_detection(
         subdir="overlays",
     )
     inference_time_ms = round((time.perf_counter() - started_at) * 1000)
+    await _persist_detection(
+        detection_id=detection_id,
+        image_id=image.image_id,
+        detections=detections,
+        mask_path=f"masks/{overlay_path}",
+        inference_time_ms=inference_time_ms,
+        confidence_threshold=effective_confidence_threshold,
+    )
 
     logger.info(
         "YOLOv8s tiled inference completed image_id=%s raw_detections=%s filtered=%s final_detections=%s overlay=%s",
@@ -135,6 +147,37 @@ async def run_yolo_detection(
         detections=detections,
         mask_url=build_static_url(mask_url_base, overlay_path),
     )
+
+
+async def _persist_detection(
+    *,
+    detection_id: str,
+    image_id: str,
+    detections: list[DetectionResult],
+    mask_path: str,
+    inference_time_ms: int,
+    confidence_threshold: float,
+) -> None:
+    connection = await get_connection()
+    try:
+        await insert_detection(
+            connection,
+            DetectionRecord(
+                detection_id=detection_id,
+                image_id=image_id,
+                model_used=YOLO_MODEL_NAME,
+                detections_json=json.dumps(
+                    [detection.model_dump() for detection in detections]
+                ),
+                mask_path=mask_path,
+                inference_time_ms=inference_time_ms,
+                confidence_threshold=confidence_threshold,
+                created_at=datetime.now(UTC).isoformat(),
+            ),
+        )
+        await connection.commit()
+    finally:
+        await connection.close()
 
 
 def _load_yolo_model() -> Any:

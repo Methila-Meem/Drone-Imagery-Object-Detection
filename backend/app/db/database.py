@@ -33,7 +33,8 @@ async def initialize_database() -> None:
                 west REAL,
                 north REAL,
                 east REAL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'legacy'
             );
 
             CREATE TABLE IF NOT EXISTS detections (
@@ -55,11 +56,24 @@ async def initialize_database() -> None:
             column_name="display_name",
             column_sql="display_name TEXT",
         )
+        await _ensure_column(
+            connection,
+            table_name="images",
+            column_name="source",
+            column_sql="source TEXT DEFAULT 'legacy'",
+        )
         await connection.execute(
             """
             UPDATE images
             SET display_name = COALESCE(NULLIF(display_name, ''), filename, image_id)
             WHERE display_name IS NULL OR display_name = ''
+            """
+        )
+        await connection.execute(
+            """
+            UPDATE images
+            SET source = 'legacy'
+            WHERE source IS NULL OR source = ''
             """
         )
         await connection.commit()

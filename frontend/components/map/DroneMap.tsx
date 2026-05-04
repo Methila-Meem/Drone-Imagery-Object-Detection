@@ -67,6 +67,7 @@ function DroneMapComponent({
   selectedDetectionIndex = null,
   onDetectionSelect
 }: DroneMapProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapRef | null>(null);
   const [projectionRevision, setProjectionRevision] = useState(0);
 
@@ -111,6 +112,25 @@ function DroneMapComponent({
     setProjectionRevision((current) => current + 1);
   }, []);
 
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      window.requestAnimationFrame(() => {
+        mapRef.current?.getMap().resize();
+        updateProjection();
+      });
+    });
+
+    resizeObserver.observe(container);
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [updateProjection]);
+
   const projectedDetections = useMemo(() => {
     const map = mapRef.current;
 
@@ -144,7 +164,7 @@ function DroneMapComponent({
   }, [fitImageBounds, updateProjection]);
 
   return (
-    <div className="relative h-full min-h-[520px]">
+    <div className="relative h-full min-h-[560px] w-full" ref={containerRef}>
       <Map
         attributionControl={false}
         initialViewState={fallbackCenter}

@@ -28,3 +28,30 @@ class DetectionResponse(BaseModel):
     detections: list[DetectionResult]
     mask_url: str | None = None
     mask_base64: str | None = None
+
+
+class DetectionHistoryItem(BaseModel):
+    detection_id: str
+    image_id: str
+    timestamp: str
+    filename: str
+    image_url: str
+    image_width: int
+    image_height: int
+    bounds: dict[str, float]
+    mode: Literal["simulated", "segformer", "real", "yolo"]
+    model_used: str
+    class_count: int
+    detected_classes: list[str]
+    inference_time_ms: int | None
+    confidence_threshold: float
+    detections: list[DetectionResult]
+    mask_url: str | None = None
+    created_at: str
+
+
+class DetectionHistoryResponse(BaseModel):
+    history: list[DetectionHistoryItem]
+    page: int = 1
+    page_size: int = 20
+    total: int = 0

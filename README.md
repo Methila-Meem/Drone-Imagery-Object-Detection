@@ -1,44 +1,48 @@
 # Drone Imagery Semantic Segmentation Platform
 
-## Project Overview
+Full-stack drone imagery analysis workspace for viewing georeferenced raster imagery, uploading multiple images, running detection or segmentation inference, visualizing masks and bounding boxes on a map, reloading persisted history, and exporting backend-generated GeoJSON.
 
-A full-stack drone imagery analysis workspace for viewing georeferenced raster imagery, running detection or segmentation inference, visualizing bounding boxes and transparent overlays, and exporting detection results as GeoJSON.
-
-The app currently supports three detection modes:
-
-- `Simulated`: deterministic demo detections for UI and API testing.
-- `SegFormer`: semantic segmentation using HuggingFace SegFormer, converted into bounding boxes and a transparent segmentation mask.
-- `YOLOv8s`: object detection using Ultralytics YOLOv8s with tiled inference, class filtering, and a bbox-derived transparent overlay.
+The primary SRS model path is SegFormer-B2. YOLOv8s remains available as an optional comparison detector, and simulated mode is available for fast UI/API verification.
 
 ## Tech Stack
 
 - Frontend: Next.js 15 App Router, React 19, TypeScript, Tailwind CSS
-- Mapping: Leaflet, React-Leaflet, OpenStreetMap tiles
-- Backend: FastAPI, Python, Pydantic Settings, Uvicorn
+- Mapping: MapLibre GL JS 4.x, react-map-gl 7.x, OpenStreetMap raster tiles
+- Backend: FastAPI, Python, Pydantic, Uvicorn, SQLite, aiosqlite
 - ML: Torch, Torchvision, HuggingFace Transformers, Ultralytics, Pillow, NumPy, OpenCV headless
-- Models: `nvidia/segformer-b0-finetuned-ade-512-512`, `yolov8s.pt`
-- Output formats: PNG overlays, frontend-generated GeoJSON FeatureCollections
+- Models: `nvidia/segformer-b2-finetuned-ade-512-512`, optional `yolov8s.pt`
+- Persistence: SQLite database at `backend/data/drone_imagery.sqlite3`
+
+## Current Features
+
+- Three pre-seeded DJI sample images with stable UUIDs and Kafrul/Dhaka bounds.
+- Multi-image JPEG/PNG upload through `POST /api/upload`, with UUID storage filenames, safe display filenames, optional manual SW/NE bounds, and a 50 MB limit.
+- SQLite-backed `images` and `detections` tables auto-initialized on FastAPI startup.
+- SegFormer-B2 default detection mode with source resizing to max side 2048 before inference.
+- SegFormer semantic masks served as static PNGs and rendered as MapLibre image raster overlays.
+- YOLOv8s optional tiled detector with an aerial allowlist and bbox-derived overlay PNGs.
+- Detection responses include `detection_id`, `image_id`, `model_used`, `inference_time_ms`, dimensions, per-detection `label`, `confidence`, `bbox`, `pixel_area`, `color`, and optional `mask_url`.
+- History API with pagination, newest first, and `DELETE /api/history/{detection_id}`.
+- Frontend History tab can reload selected detections onto the map or delete a persisted detection after confirmation.
+- Backend GeoJSON export through `GET /api/export/geojson/{detection_id}`.
+- Confidence slider from `0.00` to `1.00`; the UI filters already-returned detections without rerunning inference.
 
 ## Architecture
 
 ```text
 frontend/
   app/
-    layout.tsx              Next.js root layout
-    page.tsx                Dashboard entry page
-    globals.css             Tailwind and Leaflet global CSS
+    layout.tsx
+    page.tsx
+    globals.css             Tailwind and MapLibre global CSS
   components/
-    Dashboard.tsx           Main UI and workflow state
-    MapViewport.tsx         Compatibility wrapper
+    Dashboard.tsx           Workflow, upload, detection, history, export UI
+    MapViewport.tsx         Compatibility wrapper around DroneMap
     map/
-      DroneMap.tsx          Client-only Leaflet MapContainer
-      RasterOverlay.tsx     Drone image ImageOverlay
-      MaskOverlay.tsx       SegFormer mask / YOLO overlay ImageOverlay
-      DetectionBoxes.tsx    Bbox rectangles and popup labels
-      FitBounds.tsx         Leaflet fitBounds hook component
+      DroneMap.tsx          Client-only MapLibre map and SVG bbox overlay
   lib/
     api.ts                  Typed API client helpers
-    geojson.ts              Frontend-only GeoJSON export
+    geojson.ts              Legacy helper; backend export is the active path
 
 backend/
   app/
@@ -46,6 +50,11 @@ backend/
       health.py
       images.py
       detect.py
+      history.py
+    db/
+      database.py
+      image_repo.py
+      detection_repo.py
     schemas/
       detection.py
       images.py
@@ -60,31 +69,17 @@ backend/
     main.py
   static/
     images/
+    outputs/
     masks/
+  data/
 
 model/
-  segformer_service.py      SegFormer loading, inference, mask extraction
+  segformer_service.py      SegFormer-B2 loading, inference, masks, components
 ```
 
-The frontend calls the FastAPI backend through `frontend/lib/api.ts`. Registered image metadata drives the Leaflet raster bounds. Detection responses return pixel-space bounding boxes in the original image coordinate system, and the frontend converts them to geographic Leaflet rectangles and GeoJSON polygons.
+FastAPI routes stay thin and delegate persistence/model work to services and repositories. Pydantic schemas define backend contracts, and TypeScript types in `frontend/lib/api.ts` mirror them. Map rendering lives in the client-only MapLibre component.
 
-Leaflet is loaded client-side using dynamic import (`ssr:false`) to prevent hydration issues. Leaflet CSS is imported globally from `frontend/app/globals.css`, while all React-Leaflet rendering lives in client-only components under `frontend/components/map/`.
-
-## Features
-
-- Backend health, image registry, upload, and detection endpoints.
-- One local demo image record: `drone_image_001`.
-- Replacement image upload through `POST /api/images`.
-- Uploaded images with EXIF GPS latitude/longitude are centered on that map location.
-- Detection mode selector for `Simulated`, `SegFormer`, and `YOLOv8s`.
-- Confidence threshold slider from `0.10` to `0.95`.
-- Optional transparent overlay toggle.
-- Leaflet map with OSM base layer, georeferenced drone raster, mask overlay, and bbox rectangles.
-- Detection results panel with mode, count, threshold, labels, confidence, and pixel bbox values.
-- Empty and error states for model/backend failures.
-- Frontend-only GeoJSON export as `detections_<image_id>.geojson`.
-
-## Setup Instructions
+## Setup
 
 ### Backend
 
@@ -93,21 +88,8 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
-
-Backend URLs:
-
-```text
-GET  http://localhost:8000/
-GET  http://localhost:8000/health
-GET  http://localhost:8000/api/images
-POST http://localhost:8000/api/images
-POST http://localhost:8000/api/detect
-GET  http://localhost:8000/docs
-```
-
-Use `localhost` or `127.0.0.1` in the browser. `0.0.0.0` is only a bind address for the server.
 
 ### Frontend
 
@@ -117,98 +99,48 @@ npm install
 npm run dev
 ```
 
-Frontend URL:
+Open:
 
 ```text
 http://localhost:3000
 ```
 
-If port `3000` is already busy, Next.js may run on another port such as `3001`. Add that origin to backend CORS settings if needed.
+If Next.js starts on `3001`, the default backend CORS settings already include common `localhost` and `127.0.0.1` origins for ports `3000` and `3001`.
 
 ## Environment
 
-Create `frontend/.env.local` if the backend URL is different:
+Frontend backend URL override:
 
 ```env
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-Create `backend/.env` to override backend settings:
+Backend override:
 
 ```env
 APP_NAME=Drone Imagery Segmentation API
 BACKEND_CORS_ORIGINS=http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001
 ```
 
-## API Endpoints
-
-### Health
+## API Summary
 
 ```http
-GET /health
+GET    /health
+GET    /api/images
+POST   /api/upload
+POST   /api/images
+GET    /api/images/{image_id}
+POST   /api/detect
+GET    /api/history?page=1&page_size=20
+DELETE /api/history/{detection_id}
+GET    /api/export/geojson/{detection_id}
 ```
+
+### Detect Request
 
 ```json
 {
-  "status": "ok",
-  "service": "backend"
-}
-```
-
-### List Images
-
-```http
-GET /api/images
-```
-
-```json
-{
-  "images": [
-    {
-      "image_id": "drone_image_001",
-      "filename": "drone_001.jpg",
-      "image_url": "http://localhost:8000/static/images/drone_001.jpg",
-      "width": 2048,
-      "height": 1536,
-      "bounds": {
-        "north": 23.005,
-        "south": 23.0,
-        "east": 90.006,
-        "west": 90.0
-      }
-    }
-  ]
-}
-```
-
-### Upload Replacement Image
-
-```http
-POST /api/images
-Content-Type: multipart/form-data
-```
-
-The uploaded image replaces the local demo image and keeps the same image ID, `drone_image_001`.
-
-If the uploaded image contains EXIF GPS latitude and longitude, the backend recenters the image bounds around that GPS location. If GPS metadata is missing, the previous bounds are kept.
-
-### Get Image By ID
-
-```http
-GET /api/images/{image_id}
-```
-
-Unknown image IDs return `404`.
-
-### Run Detection
-
-```http
-POST /api/detect
-```
-
-```json
-{
-  "image_id": "drone_image_001",
+  "image_id": "11111111-1111-4111-8111-111111111111",
   "mode": "segformer",
   "confidence_threshold": 0.5
 }
@@ -216,144 +148,92 @@ POST /api/detect
 
 Supported modes:
 
-- `simulated`
-- `segformer`
+- `segformer` default
 - `real` legacy alias for SegFormer
+- `simulated`
 - `yolo`
 
-Response shape:
+### Detect Response
 
 ```json
 {
-  "image_id": "drone_image_001",
+  "detection_id": "51208757-bd33-4ee4-b36b-008360c5a11c",
+  "image_id": "11111111-1111-4111-8111-111111111111",
   "mode": "segformer",
+  "model_used": "nvidia/segformer-b2-finetuned-ade-512-512",
+  "inference_time_ms": 52878,
+  "image_width": 5280,
+  "image_height": 3956,
+  "mask_url": "http://localhost:8000/static/outputs/51208757-bd33-4ee4-b36b-008360c5a11c_mask.png",
   "detections": [
     {
       "label": "building",
       "confidence": 0.87,
-      "bbox": [0, 0, 128, 128]
+      "bbox": [120, 80, 260, 220],
+      "pixel_area": 19600,
+      "color": "#dc2626"
     }
-  ],
-  "mask_url": "http://localhost:8000/static/masks/drone_image_001_mask_0_50_<uuid>.png"
+  ]
 }
 ```
 
-`mask_url` is `null` for simulated detection. SegFormer returns a true transparent segmentation mask. YOLOv8s returns a transparent bbox-derived overlay for visual comparison.
+### GeoJSON Export
 
-## Model Integration
+`GET /api/export/geojson/{detection_id}` returns `application/geo+json`. Each feature is a polygon generated server-side from persisted detection bboxes and registered image bounds. Feature properties include:
 
-### SegFormer
+```json
+{
+  "class": "building",
+  "confidence": 0.87,
+  "pixel_area": 19600,
+  "color": "#dc2626"
+}
+```
+
+Additional traceability properties such as `detection_id`, `image_id`, and `mode` may also be included.
+
+## Map Rendering
+
+MapLibre GL JS is the active map renderer.
+
+- OSM basemap tiles are configured as a MapLibre raster source.
+- The selected drone image is rendered with an image source and raster layer at backend-provided bounds.
+- SegFormer masks and YOLO overlay PNGs are rendered as a second image source and raster layer using the same bounds.
+- Bounding boxes are drawn in an SVG overlay synchronized with MapLibre viewport changes through `map.project()`.
+
+Leaflet and React-Leaflet are not active dependencies.
+
+## Model Notes
 
 SegFormer integration lives in `model/segformer_service.py` and is wrapped by `backend/app/services/segformer_detection.py`.
 
-- Loads `nvidia/segformer-b0-finetuned-ade-512-512` lazily on first request.
+- Loads `nvidia/segformer-b2-finetuned-ade-512-512`.
 - Uses CUDA when available and CPU otherwise.
-- Runs semantic segmentation with HuggingFace Transformers and Torch.
-- Maps useful ADE classes into labels such as `building`, `vegetation`, `road`, and `earth/ground`.
-- Extracts contours with OpenCV and converts segmentation regions into pixel bboxes.
-- Generates a transparent RGBA semantic mask PNG.
-- Saves generated masks under `backend/static/masks/`.
-- Returns original-image pixel coordinates for frontend map alignment.
+- Resizes source imagery to a max side of 2048 before inference.
+- Calls `post_process_semantic_segmentation(outputs, target_sizes=[(H, W)])`.
+- Uses OpenCV `connectedComponentsWithStats` per class to produce component-level bounding boxes.
+- Generates transparent RGBA masks under `backend/static/outputs/`.
+- Persists every detection row with image ID, model, detections JSON, mask path, inference time, threshold, and timestamp.
 
-### YOLOv8s
+YOLOv8s is optional/extra. It is useful for COCO object classes visible in aerial imagery, but it is not the primary SRS segmentation model.
 
-YOLOv8s integration lives in `backend/app/services/yolo_service.py`.
+## Deviation From SRS / Future Scope: LLM Vision Mode
 
-- Loads `yolov8s.pt` lazily through Ultralytics.
-- Uses tiled inference with `1024` pixel tiles and `20%` overlap.
-- Uses `imgsz=1024`, `iou=0.45`, `max_det=300`, and CUDA when available.
-- Projects tile detections back into original image pixel coordinates.
-- Applies NMS through shared bbox utilities.
-- Filters common misleading COCO false positives in aerial imagery, including `bench`, `potted plant`, and furniture-like classes.
-- Generates a transparent PNG overlay from detection bboxes under `backend/static/masks/overlays/`.
+LLM Vision Mode is intentionally deferred for this submission because it requires server-side OpenAI API integration, API key management, and additional prompt/result validation work. SegFormer-B2 is fully implemented as the primary segmentation model required by the SRS. YOLOv8s is included only as an optional extra comparison mode and does not replace SegFormer-B2.
 
-YOLOv8s is an object detector, not a semantic segmentation model. Its overlay is generated from bounding boxes and is not a true segmentation mask.
+Future work should add a server-only LLM API route, model options such as `gpt-4o-mini` and `gpt-4.1-mini`, structured JSON output validation, and a visible "LLM Vision Mode - Approximate Results" UI banner.
 
-## Screenshots
+## Known Limitations
 
-### Dashboard Map
-
-![Dashboard map with drone raster overlay](screenshots/dashboard-map.png)
-
-### SegFormer Results
-
-![SegFormer detection results with segmentation mask](screenshots/segformer-results.png)
-
-### YOLOv8s Results
-
-![YOLOv8s detection results with bbox overlay](screenshots/yolov8-results.png)
-
-### GeoJSON Export
-
-![GeoJSON export workflow](screenshots/geojson-export.png)
-
-### Mask Overlay Toggle
-
-![Mask overlay toggle in the map workflow](screenshots/mask-overlay-toggle.png)
-
-## Limitations
-
-- Only one image record is currently registered: `drone_image_001`.
-- Uploaded images replace the demo image instead of creating persistent records.
-- Uploaded image geospatial bounds are centered from EXIF GPS when available. Exact corner alignment still requires real image footprint metadata, such as GeoTIFF bounds, a world file, or manually provided corner coordinates.
-- Generated mask and overlay PNG cleanup is not implemented.
-- No database, authentication, result history, or automated test suite yet.
-- SegFormer uses ADE classes, so label coverage depends on the pretrained model vocabulary.
-- YOLOv8s is trained on COCO and cannot reliably detect drone land-cover classes that are not COCO objects, such as `river`, `open_field`, or generalized `vegetation`.
-- CPU inference can be slow, especially for first model load and YOLO tiled inference.
-
-## Troubleshooting
-
-### Leaflet Not Loading
-
-- Confirm the map is imported dynamically with `ssr:false` from `Dashboard.tsx`.
-- Confirm `frontend/app/globals.css` includes `@import "leaflet/dist/leaflet.css";`.
-- Restart the frontend dev server after dependency or CSS changes.
-- If you see hydration warnings caused by browser extensions injecting attributes into `<html>` or `<body>`, test in an incognito window with extensions disabled. The app also suppresses root hydration warnings for this case.
-
-### Uploaded Image Not Moving To GPS Location
-
-- Confirm the uploaded image has EXIF GPS latitude and longitude metadata.
-- Some image editors or messaging apps strip EXIF metadata before upload.
-- Latitude and longitude place the image center. To align image corners exactly with roads/buildings, provide true geospatial bounds from a GeoTIFF, world file, orthomosaic export, or manual corner coordinates.
-
-### CORS Errors
-
-- Make sure the backend is running on `http://localhost:8000`.
-- Make sure `NEXT_PUBLIC_API_BASE_URL` matches the backend URL.
-- Add your frontend origin to `BACKEND_CORS_ORIGINS`, especially if Next.js starts on `3001`.
-- Restart the backend after editing `.env`.
-
-### Torch Or Model Loading Issues
-
-- Install backend dependencies from `backend/requirements.txt` inside the active virtual environment.
-- The first SegFormer run may download HuggingFace files into `model/.cache/huggingface`.
-- The first YOLOv8s run may download `yolov8s.pt` unless it already exists locally.
-- If CUDA packages are unavailable, the services should fall back to CPU.
-- For network-restricted environments, pre-download model weights and caches before running the demo.
-
-### Slow CPU Inference
-
-- First inference is slower because the model is loaded lazily.
-- YOLO tiled inference is slower than single-image inference because it improves small-object coverage.
-- Use a CUDA-capable environment for faster model inference.
-- Lowering image size or reducing tile work can improve speed, but may reduce detection quality.
-
-## Future Improvements
-
-- Store multiple uploaded image records with per-image metadata.
-- Add configurable or user-provided geospatial bounds for uploads.
-- Add cleanup or retention policy for generated mask and overlay PNGs.
-- Add automated backend and frontend tests.
-- Add persisted result history and downloadable backend-side exports.
-- Add a database and authentication.
-- Fine-tune a segmentation or detection model on drone imagery labels such as `building`, `river`, `road`, `open_field`, and `vegetation`.
-- Add model configuration through environment variables.
-- Add production deployment settings for static files, model cache paths, and CORS.
+- Exact upload footprints still require manual bounds. GeoTIFF or world-file parsing is future work.
+- Generated mask and overlay cleanup/retention is not implemented.
+- There is no authentication or automated test suite yet.
+- CPU SegFormer-B2 inference can be slow; startup warm-up helps model-load latency, but GPU acceleration is recommended.
+- ADE labels do not perfectly match custom drone land-cover classes without fine-tuning.
 
 ## Verification
 
-Recent checks:
+Recommended checks before submission:
 
 ```bash
 cd backend
@@ -366,11 +246,13 @@ cd frontend
 npm.cmd run build
 ```
 
-Manual runtime checks have verified:
+Manual flow to verify:
 
-- `GET /health`
-- `GET /api/images`
-- Simulated detection with `mask_url: null`
-- SegFormer detection with generated static PNG mask
-- YOLOv8s tiled detection with original-image bbox coordinates and generated bbox overlay URL
-- Frontend map rendering, bbox overlay, mask toggle, mode selector, and GeoJSON export
+1. Start backend and frontend.
+2. Confirm `GET /api/images` lists the three seeded DJI samples.
+3. Upload a JPEG or PNG and confirm a fresh UUID image appears in Available Imagery.
+4. Run SegFormer or simulated detection.
+5. Confirm map raster, optional mask/overlay, and SVG bboxes render.
+6. Open History and reload a prior detection onto the map.
+7. Delete a disposable history record and confirm it disappears from the History tab.
+8. Export GeoJSON and confirm feature properties contain `class`, `confidence`, `pixel_area`, and `color`.

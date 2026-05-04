@@ -17,6 +17,7 @@ class ImageRecord:
     north: float
     east: float
     created_at: str
+    source: str
 
 
 def _row_to_image(row: aiosqlite.Row) -> ImageRecord:
@@ -33,6 +34,7 @@ def _row_to_image(row: aiosqlite.Row) -> ImageRecord:
         north=row["north"],
         east=row["east"],
         created_at=row["created_at"],
+        source=row["source"],
     )
 
 
@@ -40,7 +42,7 @@ async def list_images(connection: aiosqlite.Connection) -> list[ImageRecord]:
     cursor = await connection.execute(
         """
         SELECT image_id, display_name, filename, filepath, width, height, size_bytes,
-               south, west, north, east, created_at
+               south, west, north, east, created_at, source
         FROM images
         ORDER BY created_at DESC, filename ASC
         """
@@ -55,7 +57,7 @@ async def get_image(
     cursor = await connection.execute(
         """
         SELECT image_id, display_name, filename, filepath, width, height, size_bytes,
-               south, west, north, east, created_at
+               south, west, north, east, created_at, source
         FROM images
         WHERE image_id = ?
         """,
@@ -73,9 +75,9 @@ async def upsert_image(
         """
         INSERT INTO images (
             image_id, display_name, filename, filepath, width, height, size_bytes,
-            south, west, north, east, created_at
+            south, west, north, east, created_at, source
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(image_id) DO UPDATE SET
             display_name = excluded.display_name,
             filename = excluded.filename,
@@ -86,7 +88,8 @@ async def upsert_image(
             south = excluded.south,
             west = excluded.west,
             north = excluded.north,
-            east = excluded.east
+            east = excluded.east,
+            source = excluded.source
         """,
         (
             image.image_id,
@@ -101,5 +104,36 @@ async def upsert_image(
             image.north,
             image.east,
             image.created_at,
+            image.source,
         ),
     )
+
+
+async def delete_legacy_images_except(
+    connection: aiosqlite.Connection, image_ids_to_keep: set[str]
+) -> int:
+    placeholders = ",".join("?" for _ in image_ids_to_keep)
+    cursor = await connection.execute(
+        f"""
+        SELECT image_id
+        FROM images
+        WHERE source = 'legacy'
+          AND image_id NOT IN ({placeholders})
+        """,
+        tuple(image_ids_to_keep),
+    )
+    rows = await cursor.fetchall()
+    image_ids = [row["image_id"] for row in rows]
+    if not image_ids:
+        return 0
+
+    delete_placeholders = ",".join("?" for _ in image_ids)
+    await connection.execute(
+        f"DELETE FROM detections WHERE image_id IN ({delete_placeholders})",
+        tuple(image_ids),
+    )
+    await connection.execute(
+        f"DELETE FROM images WHERE image_id IN ({delete_placeholders})",
+        tuple(image_ids),
+    )
+    return len(image_ids)
