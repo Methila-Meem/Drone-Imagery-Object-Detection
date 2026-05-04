@@ -10,7 +10,7 @@ Current implementation is an early scaffold with a working FastAPI backend, a wo
 
 ## Tech Stack
 
-- Frontend: Next.js 15, React 19, TypeScript, Tailwind CSS, MapLibre GL JS 4.x, react-map-gl 7.x
+- Frontend: Next.js 16, React 19, TypeScript, Tailwind CSS, MapLibre GL JS 4.x, react-map-gl 7.x
 - Backend: FastAPI, Python, Pydantic Settings, Uvicorn, SQLite, aiosqlite
 - ML dependencies: Torch, Torchvision, HuggingFace Transformers, Ultralytics, Pillow, NumPy, OpenCV headless
 - Models: HuggingFace SegFormer `nvidia/segformer-b2-finetuned-ade-512-512`; YOLOv8s `yolov8s.pt`
@@ -57,9 +57,7 @@ Current implementation is an early scaffold with a working FastAPI backend, a wo
 |   |   +-- page.tsx
 |   +-- components/
 |   |   +-- Dashboard.tsx
-|   |   +-- MapViewport.tsx
 |   |   +-- map/
-|   |   |   +-- DroneMap.tsx
 |   |   |   +-- DroneMap.tsx
 |   +-- lib/api.ts
 |   +-- lib/geojson.ts
@@ -189,7 +187,7 @@ Detection API state:
 - Real detection uses CPU by default when CUDA is unavailable.
 - Real detection loads `nvidia/segformer-b2-finetuned-ade-512-512` through HuggingFace Transformers.
 - Real detection starts a background warm-up task through the dedicated SegFormer service; warm-up failures are logged without preventing backend startup so user-facing failures still map to `503`.
-- Real detection resizes source imagery to a max side of `2048` before inference while preserving aspect ratio, then scales component boxes back to the registered image size.
+- Real detection resizes source imagery to a max side of `1024` before inference while preserving aspect ratio, then scales component boxes back to the registered image size.
 - Real detection maps useful ADE classes into readable labels: `building`, `vegetation`, `road`, and `earth/ground`.
 - Real detection converts segmentation masks into bounding boxes with OpenCV `connectedComponentsWithStats`, producing one bbox per valid connected component instead of one large contour per class.
 - Real detection filters tiny components and suppresses near-whole-image bbox artifacts unless the component itself covers most of the image.
@@ -252,7 +250,7 @@ Backend settings are in `backend/app/core/config.py`.
 
 Backend dependencies are pinned in `backend/requirements.txt`, including `aiosqlite==0.20.0`.
 
-Important current limitation: uploaded imagery now persists in SQLite and filesystem storage, but exact georeferenced upload footprints still require manual bounds or future GeoTIFF/world-file parsing. Real detection works, but the first run requires downloading the HuggingFace model unless it already exists in the local model cache.
+Important current limitation: uploaded imagery now persists in SQLite and filesystem storage, but exact georeferenced upload footprints still require manual bounds or future GeoTIFF/world-file parsing. Real detection works, but a clean clone may download the HuggingFace model on first use unless it already exists in the local model cache.
 
 ## Frontend State
 
@@ -276,20 +274,20 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 - Shows a vertically stacked detection mode selector for `Simulated`, `SegFormer`, and `YOLOv8s` so labels do not overlap in the narrow sidebar.
 - Shows a confidence threshold slider from `0.00` to `1.00`, defaulting to `0.50`.
 - Runs inference with threshold `0.00` and performs real-time frontend confidence filtering against the raw detection response without rerunning inference.
-- Shows a mode-aware overlay checkbox: `Show segmentation mask` for SegFormer masks and `Show YOLO overlay` for YOLO bbox-derived overlays.
+- Shows a mode-aware overlay checkbox: `Show segmentation mask` for SegFormer masks and generic `Show overlay` for non-segmentation overlays such as YOLO bbox PNGs.
 - Shows a loading spinner in controls plus a translucent map busy overlay and result-panel skeleton while detection is running.
 - Stores the active raw detection run in React state and derives filtered detections from confidence and class visibility state.
 - Stores the latest `mask_url` in React state.
 - Stores the selected bbox index in React state so clicking a map bbox highlights the matching detection result row.
 - Provides a `Clear Results` button.
 - Selects the first available image by default.
-- Shows a `Visible` metric as `filtered/total` and an `Overlay` metric based on whether an overlay URL is available.
-- Shows a drone image opacity slider from `40%` to `100%`, defaulting to `85%`.
+- Shows SRS-aligned sidebar metrics for model used, inference time, returned detections, and confidence threshold.
+- Shows a drone image opacity slider from `0%` to `100%`, defaulting to `85%`.
 - Renders the map workspace area.
 - Shows clean loading, error, and empty-image states for the image registry.
 - Shows a right-side image details panel with `image_id`, image size, and image bounds.
 - Shows a tabbed right panel with `Results` and `History`.
-- Shows class visibility checkboxes that hide/show bbox classes and suppress the composite mask/overlay when all classes are hidden.
+- Shows class visibility checkboxes that hide/show bbox classes without rerunning inference and suppress the composite mask/overlay when class filtering would make the raster overlay misleading.
 - Shows a legend with detected class names, colors, and counts, matching detection-provided colors or the fallback map palette.
 - Shows detection results with class name, confidence bar, pixel area, color swatch, model used, inference time, total filtered/returned counts, and total class count.
 - Shows an `Export GeoJSON` button for persisted detections.
@@ -305,8 +303,6 @@ The frontend entry page is `frontend/app/page.tsx`, which renders `Dashboard`.
 - Desktop dashboard grid uses `lg:grid-cols-[300px_minmax(0,1fr)_340px]`, giving the left workflow panel about `300px`, the right details/results panel about `340px`, and the map the remaining flexible width.
 - Below the `lg` breakpoint, the grid stacks into a single column so the workflow, map, and detail panels remain readable on medium/smaller screens.
 - The map container uses `min-h-[560px]` and `lg:min-h-[calc(100vh-112px)]` to keep the map vertically dominant without adding inner padding around the MapLibre canvas.
-
-`frontend/components/MapViewport.tsx` is now a compatibility wrapper around `frontend/components/map/DroneMap.tsx`.
 
 The MapLibre map lives in `frontend/components/map/DroneMap.tsx`.
 
@@ -357,7 +353,7 @@ The map components:
 - Exposes typed detection models and `runDetection()` for `POST /api/detect`.
 - Detection response mode type is `"simulated" | "segformer" | "yolo" | "real"`.
 - Detection responses include `detection_id`, `model_used`, `inference_time_ms`, `image_width`, `image_height`, `mask_url`, and optional `mask_base64`.
-- Detection items include optional `pixel_area` and `color` fields for SegFormer component results.
+- Detection items include optional `pixel_area` and `color` fields; SegFormer and simulated detections populate them, while YOLO detections may omit them.
 - `runDetection()` accepts an optional mode and sends `"segformer"` by default.
 - `runDetection()` sends both `mode` and `confidence_threshold`.
 - Exposes `getDetectionHistory()` for `GET /api/history`.
@@ -382,7 +378,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 ## Model Directory State
 
-`model/README.md` says the directory is reserved for SegFormer assets, checkpoints, and model-facing documentation.
+`model/README.md` documents the active model layer, SegFormer-B2 service behavior, local model caches, and the optional YOLO cache location.
 
 Current model-facing files:
 
@@ -397,7 +393,7 @@ Current model-facing files:
 - Provides a warm-up call that loads the model and runs a tiny dummy inference.
 - Uses `cuda` when available and CPU otherwise.
 - Runs semantic segmentation with Torch no-grad inference.
-- Resizes input imagery to a max side of `2048` while preserving aspect ratio before inference.
+- Resizes input imagery to a max side of `1024` while preserving aspect ratio before inference.
 - Uses `processor.post_process_semantic_segmentation(outputs, target_sizes=[(H, W)])`.
 - Maps raw class IDs to useful readable labels.
 - Uses OpenCV `connectedComponentsWithStats` to emit one bbox per valid connected component.
@@ -560,7 +556,7 @@ Exported GeoJSON example:
 - Simulated detection service with registry validation, confidence filtering, SRS metadata, and SQLite persistence.
 - SegFormer detection wrapper service with registry validation and service error mapping.
 - SegFormer-B2 model service with lazy thread-safe model loading, CPU-safe execution, ADE label mapping, confidence filtering, and OpenCV connected-component bbox extraction.
-- SegFormer input resizing to max side `2048` before inference.
+- SegFormer input resizing to max side `1024` before inference.
 - SegFormer semantic map resizing through `processor.post_process_semantic_segmentation`.
 - SegFormer component detections with `pixel_area` and `color`.
 - SegFormer mask PNG generation under `backend/static/outputs/{detection_id}_mask.png`.
@@ -615,8 +611,7 @@ Exported GeoJSON example:
 - MapLibre container resize is handled through `ResizeObserver` plus `map.resize()` so responsive layout changes do not leave stale canvas dimensions or bbox projections.
 - Bbox click selection highlights the matching detection result panel row.
 - Detection mode selector adjusted to avoid overlap in the sidebar.
-- Boxes metric based on current detection results.
-- Overlay metric based on current mask or YOLO overlay availability.
+- SRS-aligned sidebar metrics for model used, inference time, returned detections, and confidence threshold.
 - `.gitignore` excludes `model/.cache/` so downloaded model artifacts are not committed.
 - `.gitignore` excludes `backend/static/masks/` so generated mask PNGs are not committed.
 - `.gitignore` excludes `backend/static/outputs/` so generated SegFormer output PNGs are not committed.
@@ -633,6 +628,7 @@ Exported GeoJSON example:
 - Automated browser test for MapLibre hydration and map overlay rendering.
 - Committed automated browser test for the full upload -> detect -> filter -> history -> backend export workflow. A temporary CDP script was used for verification but not kept in the repo.
 - Custom-trained detector or segmenter for target drone land-cover classes such as `building`, `river`, `road`, `open_field`, and `vegetation`.
+- LLM Vision Mode is deferred / future scope. It is not implemented in the current app; future work should add server-only OpenAI API handling, `gpt-4o-mini` / `gpt-4.1-mini` model options, structured JSON validation, and an approximate-results UI banner.
 
 ## Good Next Tasks
 
@@ -710,7 +706,7 @@ Recent checks after SegFormer-B2 SRS pipeline update:
 - Frontend production build passed with `npm.cmd run build` after the MapLibre migration.
 - Headless Chrome verification against `http://127.0.0.1:3001` confirmed `.maplibregl-map` and `.maplibregl-canvas` rendered, OSM tile requests were issued to `https://tile.openstreetmap.org/...`, and the selected drone raster was requested from `/static/images/...`.
 - Simulated detection browser verification rendered 8 SVG bbox polygons with label/confidence text, confirmed bbox SVG points changed after MapLibre zoom, and confirmed clicking a bbox highlighted one matching detection panel entry.
-- YOLO browser verification confirmed the mode label changed to `Show YOLO overlay`, the overlay metric showed an overlay, and a MapLibre mask/overlay image request was made to `/static/masks/overlays/...`.
+- YOLO browser verification confirmed the non-segmentation overlay path used a generic `Show overlay` label and a MapLibre mask/overlay image request was made to `/static/masks/overlays/...`.
 - Browser console/event verification found no hydration mismatch errors during the MapLibre checks; the only captured warning/error was a missing favicon-style `404`.
 - Backend compile check passed with `.venv\Scripts\python.exe -m compileall app ..\model` after YOLO aerial allowlist update.
 - Frontend TypeScript check passed with `.\node_modules\.bin\tsc.cmd --noEmit --incremental false` after the mode-aware overlay label update.
@@ -735,7 +731,7 @@ Recent checks after SegFormer-B2 SRS pipeline update:
 - SegFormer returned multiple component bboxes; they did not all span the full image.
 - SegFormer mask URL served an actual PNG from `/static/outputs/...` with `200`, `image/png`, and nonzero byte length.
 - Latest detection row appeared in SQLite with detection ID, image ID, model name, inference time, confidence threshold, mask path, and serialized detections JSON.
-- Warmed CPU SegFormer-B2 inference on the full seeded sample measured about `52.9s`; model load is moved to startup warm-up, but this local CPU path remains above the SRS 10s target without GPU acceleration or a lower inference max side.
+- Warmed direct SegFormer-B2 service inference on the full seeded sample measured about `6.2s` after reducing the inference max side to `1024`; model load is still moved to startup warm-up, and GPU acceleration remains recommended for heavier runs.
 - Backend requirements sync passed with `.venv\Scripts\python.exe -m pip install -r requirements.txt` after installing `aiosqlite==0.20.0`.
 - Backend `uvicorn app.main:app --host 127.0.0.1 --port 8000` startup succeeded and auto-created the SQLite database.
 - `GET /api/images` returned the three seeded sample images with stable UUIDs and Kafrul/Dhaka bounds.
@@ -746,13 +742,16 @@ Recent checks after SegFormer-B2 SRS pipeline update:
 - Simulated route dispatch returned expected filtered detections and `mask_url: null`.
 - Real SegFormer inference ran successfully for `11111111-1111-4111-8111-111111111111`, returned model-generated detections, and returned a static `mask_url`.
 - YOLOv8s tiled inference ran successfully for `11111111-1111-4111-8111-111111111111`, returned detections through `mode: "yolo"`, and returned a bbox-derived overlay `mask_url`.
-- YOLOv8s overlay was verified as `2048x1536 RGBA`.
+- YOLOv8s overlay generation was verified as an RGBA PNG served from `/static/masks/overlays/...`.
 - Generated real mask was served successfully from `/static/masks/...` with content type `image/png`.
-- Generated real mask was verified as `2048x1536 RGBA`.
+- Generated real mask was verified as an RGBA PNG served from `/static/outputs/...`.
 - GeoJSON export helper passed frontend TypeScript check.
 - A structural GeoJSON validation check passed for `FeatureCollection`, `Polygon`, finite `[longitude, latitude]` coordinates, and closed rings.
 - Frontend dev server responded at `http://localhost:3000`.
-- `npm run lint` did not complete because this Next.js project has no ESLint config yet and `next lint` opened an interactive setup prompt.
+- Frontend lint now uses ESLint 9 with `eslint.config.mjs`; `npm run lint` passed with no warnings.
+- Frontend production build passed with `npm run build` on Next.js 16.
+- Clean install checks passed locally: `pip install -r requirements.txt` and `npm install`.
+- CORS preflight from `http://localhost:3000` to the backend returned `200` using default origins without requiring a backend `.env`.
 - Git status can be checked with a one-off `git -c safe.directory='D:/Methila_work/Drone Imagery Object Detection' status --short`; direct git commands may still report dubious ownership in the sandbox.
 
 ## Git Note

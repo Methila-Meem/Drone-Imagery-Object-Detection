@@ -63,6 +63,7 @@ type DetectionRun = DetectionResponse & {
 };
 
 type PanelTab = "results" | "history";
+type BoundsInputState = Record<"south" | "west" | "north" | "east", string>;
 
 const detectionModeOptions = [
   "simulated",
@@ -76,6 +77,13 @@ const ACCEPTED_UPLOAD_TYPES = {
   "image/jpg": [".jpg", ".jpeg"],
   "image/pjpeg": [".jpg", ".jpeg"],
   "image/png": [".png"]
+};
+
+const FALLBACK_UPLOAD_BOUNDS = {
+  south: 23.778,
+  west: 90.354,
+  north: 23.782,
+  east: 90.358
 };
 
 export function Dashboard() {
@@ -179,10 +187,15 @@ export function Dashboard() {
   }, []);
 
   const isOnline = backend.status === "online";
-  const images = imagesState.status === "ready" ? imagesState.images : [];
+  const images = useMemo(
+    () => (imagesState.status === "ready" ? imagesState.images : []),
+    [imagesState]
+  );
   const sortedImages = useMemo(() => sortImagesNewestFirst(images), [images]);
-  const selectedImageBase =
-    images.find((image) => image.image_id === selectedImageId) ?? null;
+  const selectedImageBase = useMemo(
+    () => images.find((image) => image.image_id === selectedImageId) ?? null,
+    [images, selectedImageId]
+  );
   const selectedImage = useMemo(() => {
     if (!selectedImageBase) {
       return null;
@@ -216,6 +229,15 @@ export function Dashboard() {
   const allClassesHidden =
     classSummaries.length > 0 &&
     classSummaries.every((summary) => visibleClasses[summary.label] === false);
+  const hasHiddenClasses =
+    classSummaries.length > 0 &&
+    classSummaries.some((summary) => visibleClasses[summary.label] === false);
+  const isOverlayVisible =
+    showOverlay &&
+    !allClassesHidden &&
+    !hasHiddenClasses &&
+    filteredDetections.length > 0 &&
+    Boolean(maskUrl);
 
   const handleUpload = async (file: File, options?: UploadImageOptions) => {
     setUploadState({ status: "uploading", message: "Uploading image" });
@@ -531,10 +553,21 @@ export function Dashboard() {
               ) : null}
               <div className="grid grid-cols-2 gap-3">
                 <Metric
-                  label="Visible"
-                  value={`${filteredDetections.length}/${activeRun?.detections.length ?? 0}`}
+                  label="Model Used"
+                  value={formatShortModel(activeRun?.model_used)}
                 />
-                <Metric label="Overlay" value={maskUrl ? "1" : "0"} />
+                <Metric
+                  label="Inference Time"
+                  value={formatInferenceTime(activeRun?.inference_time_ms)}
+                />
+                <Metric
+                  label="Returned"
+                  value={`${activeRun?.detections.length ?? 0} boxes`}
+                />
+                <Metric
+                  label="Threshold"
+                  value={confidenceThreshold.toFixed(2)}
+                />
               </div>
               <Legend summaries={classSummaries} />
             </div>
@@ -546,9 +579,7 @@ export function Dashboard() {
               droneOpacity={droneOpacity}
               image={selectedImage}
               maskUrl={
-                showOverlay && !allClassesHidden && filteredDetections.length > 0
-                  ? maskUrl
-                  : null
+                isOverlayVisible ? maskUrl : null
               }
               onDetectionSelect={setSelectedDetectionIndex}
               selectedDetectionIndex={selectedDetectionIndex}
@@ -586,7 +617,9 @@ export function Dashboard() {
                 />
                 <DetectionResults
                   detections={filteredDetections}
+                  onSelectDetection={setSelectedDetectionIndex}
                   rawCount={activeRun?.detections.length ?? 0}
+                  returnedClassCount={classSummaries.length}
                   run={activeRun}
                   selectedDetectionIndex={selectedDetectionIndex}
                   state={detectionState}
@@ -671,22 +704,27 @@ function ImageUpload({
 }) {
   const isUploading = state.status === "uploading";
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [clientError, setClientError] = useState<string | null>(null);
+  const [useCustomBounds, setUseCustomBounds] = useState(false);
+  const [boundsInput, setBoundsInput] = useState<BoundsInputState>({
+    south: FALLBACK_UPLOAD_BOUNDS.south.toString(),
+    west: FALLBACK_UPLOAD_BOUNDS.west.toString(),
+    north: FALLBACK_UPLOAD_BOUNDS.north.toString(),
+    east: FALLBACK_UPLOAD_BOUNDS.east.toString()
+  });
+
+  const previewUrl = useMemo(
+    () => (selectedFile ? URL.createObjectURL(selectedFile) : null),
+    [selectedFile]
+  );
 
   useEffect(() => {
-    if (!selectedFile) {
-      setPreviewUrl(null);
-      return;
-    }
-
-    const nextPreviewUrl = URL.createObjectURL(selectedFile);
-    setPreviewUrl(nextPreviewUrl);
-
     return () => {
-      URL.revokeObjectURL(nextPreviewUrl);
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
     };
-  }, [selectedFile]);
+  }, [previewUrl]);
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     accept: ACCEPTED_UPLOAD_TYPES,
@@ -721,7 +759,18 @@ function ImageUpload({
       return;
     }
 
-    void onUpload(selectedFile);
+    if (!useCustomBounds) {
+      void onUpload(selectedFile);
+      return;
+    }
+
+    const bounds = parseBoundsInput(boundsInput);
+    if (!bounds) {
+      setClientError("Enter valid SW and NE bounds before uploading.");
+      return;
+    }
+
+    void onUpload(selectedFile, { bounds });
   };
 
   return (
@@ -776,6 +825,54 @@ function ImageUpload({
           </button>
         </div>
       ) : null}
+      <div className="mt-3 rounded border border-line bg-white p-3">
+        <label className="flex items-center gap-2 text-sm font-medium text-ink">
+          <input
+            checked={useCustomBounds}
+            className="h-4 w-4 accent-teal-700"
+            disabled={isUploading}
+            onChange={(event) => setUseCustomBounds(event.currentTarget.checked)}
+            type="checkbox"
+          />
+          Custom SW/NE bounds
+        </label>
+        {useCustomBounds ? (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <BoundsInput
+              disabled={isUploading}
+              label="South"
+              value={boundsInput.south}
+              onChange={(value) =>
+                setBoundsInput((current) => ({ ...current, south: value }))
+              }
+            />
+            <BoundsInput
+              disabled={isUploading}
+              label="West"
+              value={boundsInput.west}
+              onChange={(value) =>
+                setBoundsInput((current) => ({ ...current, west: value }))
+              }
+            />
+            <BoundsInput
+              disabled={isUploading}
+              label="North"
+              value={boundsInput.north}
+              onChange={(value) =>
+                setBoundsInput((current) => ({ ...current, north: value }))
+              }
+            />
+            <BoundsInput
+              disabled={isUploading}
+              label="East"
+              value={boundsInput.east}
+              onChange={(value) =>
+                setBoundsInput((current) => ({ ...current, east: value }))
+              }
+            />
+          </div>
+        ) : null}
+      </div>
       {clientError ? <p className="mt-2 text-sm text-rose-700">{clientError}</p> : null}
       {state.message ? (
         <p className={`mt-2 text-sm ${state.status === "error" ? "text-rose-700" : "text-muted"}`}>
@@ -803,6 +900,56 @@ function ImageUpload({
       ) : null}
     </div>
   );
+}
+
+function BoundsInput({
+  disabled,
+  label,
+  value,
+  onChange
+}: {
+  disabled: boolean;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block text-xs font-medium uppercase tracking-[0.12em] text-muted">
+      {label}
+      <input
+        className="mt-1 w-full rounded border border-line bg-white px-2 py-1.5 font-mono text-sm normal-case tracking-normal text-ink outline-none ring-accent/20 transition focus:border-accent focus:ring-4 disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={disabled}
+        inputMode="decimal"
+        onChange={(event) => onChange(event.currentTarget.value)}
+        type="number"
+        value={value}
+      />
+    </label>
+  );
+}
+
+function parseBoundsInput(bounds: BoundsInputState) {
+  const south = Number(bounds.south);
+  const west = Number(bounds.west);
+  const north = Number(bounds.north);
+  const east = Number(bounds.east);
+
+  if (
+    !Number.isFinite(south) ||
+    !Number.isFinite(west) ||
+    !Number.isFinite(north) ||
+    !Number.isFinite(east) ||
+    south >= north ||
+    west >= east ||
+    south < -90 ||
+    north > 90 ||
+    west < -180 ||
+    east > 180
+  ) {
+    return null;
+  }
+
+  return { south, west, north, east };
 }
 
 function DetectionControls({
@@ -842,7 +989,9 @@ function DetectionControls({
 }) {
   const isRunning = state.status === "running";
   const overlayLabel =
-    detectionMode === "yolo" ? "Show YOLO overlay" : "Show segmentation mask";
+    detectionMode === "segformer" || detectionMode === "real"
+      ? "Show segmentation mask"
+      : "Show overlay";
 
   return (
     <div className="rounded border border-line bg-white p-4">
@@ -895,9 +1044,9 @@ function DetectionControls({
         disabled={isRunning}
         id="drone-opacity"
         max="1"
-        min="0.4"
+        min="0"
         onChange={(event) => onOpacityChange(Number(event.currentTarget.value))}
-        step="0.05"
+        step="0.01"
         type="range"
         value={droneOpacity}
       />
@@ -1050,14 +1199,18 @@ function ClassFilters({
 
 function DetectionResults({
   detections,
+  onSelectDetection,
   rawCount,
+  returnedClassCount,
   run,
   selectedDetectionIndex,
   state,
   threshold
 }: {
   detections: Detection[];
+  onSelectDetection: (index: number) => void;
   rawCount: number;
+  returnedClassCount: number;
   run: DetectionRun | null;
   selectedDetectionIndex: number | null;
   state: DetectionState;
@@ -1078,8 +1231,12 @@ function DetectionResults({
           value={formatInferenceTime(run?.inference_time_ms)}
         />
         <ResultMeta
+          label="Returned"
+          value={`${rawCount} boxes`}
+        />
+        <ResultMeta
           label="Classes"
-          value={buildClassSummaries(detections).length.toString()}
+          value={`${buildClassSummaries(detections).length}/${returnedClassCount}`}
         />
         <ResultMeta label="Filter" value={threshold.toFixed(2)} />
       </dl>
@@ -1104,9 +1261,18 @@ function DetectionResults({
                 className={`rounded border p-3 ${
                   selectedDetectionIndex === index
                     ? "border-orange-300 bg-orange-50"
-                    : "border-line bg-slate-50"
-                }`}
+                    : "border-line bg-slate-50 hover:border-accent hover:bg-white"
+                } cursor-pointer transition`}
                 key={`${detection.label}-${index}-${detection.bbox.join("-")}`}
+                onClick={() => onSelectDetection(index)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelectDetection(index);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="inline-flex min-w-0 items-center gap-2">
@@ -1309,6 +1475,19 @@ function formatDetectionMode(mode: DetectionMode): string {
   return "Simulated";
 }
 
+function formatShortModel(modelUsed: string | null | undefined): string {
+  if (!modelUsed) {
+    return "Not run";
+  }
+  if (modelUsed.includes("segformer")) {
+    return "SegFormer-B2";
+  }
+  if (modelUsed.toLowerCase().includes("yolo")) {
+    return "YOLOv8s";
+  }
+  return modelUsed;
+}
+
 function formatInferenceTime(value: number | null | undefined): string {
   if (typeof value !== "number") {
     return "Not run";
@@ -1397,11 +1576,13 @@ function MapStatus({
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded border border-line bg-white p-3">
+    <div className="min-w-0 rounded border border-line bg-white p-3">
       <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted">
         {label}
       </p>
-      <p className="mt-1 text-2xl font-semibold text-ink">{value}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-ink" title={value}>
+        {value}
+      </p>
     </div>
   );
 }

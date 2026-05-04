@@ -6,7 +6,7 @@ The primary SRS model path is SegFormer-B2. YOLOv8s remains available as an opti
 
 ## Tech Stack
 
-- Frontend: Next.js 15 App Router, React 19, TypeScript, Tailwind CSS
+- Frontend: Next.js 16 App Router, React 19, TypeScript, Tailwind CSS
 - Mapping: MapLibre GL JS 4.x, react-map-gl 7.x, OpenStreetMap raster tiles
 - Backend: FastAPI, Python, Pydantic, Uvicorn, SQLite, aiosqlite
 - ML: Torch, Torchvision, HuggingFace Transformers, Ultralytics, Pillow, NumPy, OpenCV headless
@@ -18,7 +18,7 @@ The primary SRS model path is SegFormer-B2. YOLOv8s remains available as an opti
 - Three pre-seeded DJI sample images with stable UUIDs and Kafrul/Dhaka bounds.
 - Multi-image JPEG/PNG upload through `POST /api/upload`, with UUID storage filenames, safe display filenames, optional manual SW/NE bounds, and a 50 MB limit.
 - SQLite-backed `images` and `detections` tables auto-initialized on FastAPI startup.
-- SegFormer-B2 default detection mode with source resizing to max side 2048 before inference.
+- SegFormer-B2 default detection mode with source resizing to max side 1024 before inference.
 - SegFormer semantic masks served as static PNGs and rendered as MapLibre image raster overlays.
 - YOLOv8s optional tiled detector with an aerial allowlist and bbox-derived overlay PNGs.
 - Detection responses include `detection_id`, `image_id`, `model_used`, `inference_time_ms`, dimensions, per-detection `label`, `confidence`, `bbox`, `pixel_area`, `color`, and optional `mask_url`.
@@ -26,6 +26,9 @@ The primary SRS model path is SegFormer-B2. YOLOv8s remains available as an opti
 - Frontend History tab can reload selected detections onto the map or delete a persisted detection after confirmation.
 - Backend GeoJSON export through `GET /api/export/geojson/{detection_id}`.
 - Confidence slider from `0.00` to `1.00`; the UI filters already-returned detections without rerunning inference.
+- Drone raster opacity slider defaults to 85% and supports the full 0% to 100% range.
+- Per-class visibility checkboxes, class legend, bbox/result click highlighting, SRS-aligned metrics, and backend GeoJSON export controls are available in the dashboard.
+- Simulated detections are scaled to the selected image dimensions so they render across the full image footprint instead of only the top-left of large DJI samples.
 
 ## Architecture
 
@@ -37,7 +40,6 @@ frontend/
     globals.css             Tailwind and MapLibre global CSS
   components/
     Dashboard.tsx           Workflow, upload, detection, history, export UI
-    MapViewport.tsx         Compatibility wrapper around DroneMap
     map/
       DroneMap.tsx          Client-only MapLibre map and SVG bbox overlay
   lib/
@@ -81,12 +83,31 @@ FastAPI routes stay thin and delegate persistence/model work to services and rep
 
 ## Setup
 
+Prerequisites:
+
+- Python 3.11 or newer.
+- Node.js 20.9 or newer for Next.js 16.
+
 ### Backend
 
 ```bash
 cd backend
 python -m venv .venv
+```
+
+Activate the virtual environment:
+
+```bash
+# Windows PowerShell
 .venv\Scripts\activate
+
+# macOS/Linux
+source .venv/bin/activate
+```
+
+Install and run:
+
+```bash
 pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
@@ -209,7 +230,7 @@ SegFormer integration lives in `model/segformer_service.py` and is wrapped by `b
 
 - Loads `nvidia/segformer-b2-finetuned-ade-512-512`.
 - Uses CUDA when available and CPU otherwise.
-- Resizes source imagery to a max side of 2048 before inference.
+- Resizes source imagery to a max side of 1024 before inference.
 - Calls `post_process_semantic_segmentation(outputs, target_sizes=[(H, W)])`.
 - Uses OpenCV `connectedComponentsWithStats` per class to produce component-level bounding boxes.
 - Generates transparent RGBA masks under `backend/static/outputs/`.
@@ -237,13 +258,14 @@ Recommended checks before submission:
 
 ```bash
 cd backend
-.venv\Scripts\python.exe -m compileall app ..\model
+python -m compileall app ../model
 ```
 
 ```bash
 cd frontend
-.\node_modules\.bin\tsc.cmd --noEmit --incremental false
-npm.cmd run build
+npm run lint
+npx tsc --noEmit --incremental false
+npm run build
 ```
 
 Manual flow to verify:

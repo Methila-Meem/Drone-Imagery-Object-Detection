@@ -69,7 +69,9 @@ function DroneMapComponent({
 }: DroneMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapRef | null>(null);
-  const [projectionRevision, setProjectionRevision] = useState(0);
+  const [projectedDetections, setProjectedDetections] = useState<
+    ProjectedDetection[]
+  >([]);
 
   const imageCoordinates = useMemo(() => {
     if (!image) {
@@ -77,12 +79,7 @@ function DroneMapComponent({
     }
 
     return getImageCoordinates(image);
-  }, [
-    image?.bounds.east,
-    image?.bounds.north,
-    image?.bounds.south,
-    image?.bounds.west
-  ]);
+  }, [image]);
 
   const fitImageBounds = useCallback(() => {
     if (!image || !mapRef.current) {
@@ -96,21 +93,35 @@ function DroneMapComponent({
       ],
       { duration: 0, padding: 48 }
     );
-    setProjectionRevision((current) => current + 1);
-  }, [
-    image?.bounds.east,
-    image?.bounds.north,
-    image?.bounds.south,
-    image?.bounds.west
-  ]);
+  }, [image]);
 
   useEffect(() => {
     fitImageBounds();
   }, [fitImageBounds]);
 
   const updateProjection = useCallback(() => {
-    setProjectionRevision((current) => current + 1);
-  }, []);
+    const map = mapRef.current;
+
+    if (!image || !map) {
+      setProjectedDetections([]);
+      return;
+    }
+
+    setProjectedDetections(
+      detections.map((detection, index) =>
+        projectDetection({
+          detection,
+          image,
+          index,
+          map
+        })
+      )
+    );
+  }, [detections, image]);
+
+  useEffect(() => {
+    updateProjection();
+  }, [updateProjection]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -130,33 +141,6 @@ function DroneMapComponent({
       resizeObserver.disconnect();
     };
   }, [updateProjection]);
-
-  const projectedDetections = useMemo(() => {
-    const map = mapRef.current;
-
-    if (!image || !map) {
-      return [];
-    }
-
-    return detections.map((detection, index) =>
-      projectDetection({
-        detection,
-        image,
-        index,
-        map
-      })
-    );
-  }, [
-    detections,
-    image,
-    image?.bounds.east,
-    image?.bounds.north,
-    image?.bounds.south,
-    image?.bounds.west,
-    image?.height,
-    image?.width,
-    projectionRevision
-  ]);
 
   const handleMapLoad = useCallback(() => {
     fitImageBounds();
@@ -240,7 +224,7 @@ function DetectionSvgOverlay({
 }) {
   return (
     <svg className="pointer-events-none absolute inset-0 z-[1] h-full w-full overflow-visible">
-      {detections.map(({ color, detection, index, key, label, points }) => {
+      {detections.map(({ color, index, key, label, points }) => {
         const isSelected = selectedDetectionIndex === index;
         const polygonPoints = [
           points.topLeft,

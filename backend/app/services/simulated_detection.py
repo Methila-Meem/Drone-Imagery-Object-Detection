@@ -19,6 +19,14 @@ _SIMULATED_DETECTIONS = [
     DetectionResult(label="road/path", confidence=0.86, bbox=(40, 980, 1780, 1125)),
     DetectionResult(label="road/path", confidence=0.62, bbox=(1010, 350, 1160, 1030)),
 ]
+_SIMULATED_BASE_WIDTH = 2048
+_SIMULATED_BASE_HEIGHT = 1536
+_SIMULATED_COLORS = {
+    "building": "#dc2626",
+    "vegetation": "#16a34a",
+    "open_land": "#ca8a04",
+    "road/path": "#2563eb",
+}
 
 
 async def run_simulated_detection(
@@ -31,7 +39,7 @@ async def run_simulated_detection(
         raise
 
     detections = [
-        detection
+        _scale_detection(detection, image.width, image.height)
         for detection in _SIMULATED_DETECTIONS
         if detection.confidence >= confidence_threshold
     ]
@@ -54,6 +62,33 @@ async def run_simulated_detection(
         image_width=image.width,
         image_height=image.height,
         detections=detections,
+    )
+
+
+def _scale_detection(
+    detection: DetectionResult,
+    image_width: int,
+    image_height: int,
+) -> DetectionResult:
+    x_scale = image_width / _SIMULATED_BASE_WIDTH
+    y_scale = image_height / _SIMULATED_BASE_HEIGHT
+    x_min, y_min, x_max, y_max = detection.bbox
+    scaled_bbox = (
+        min(max(int(round(x_min * x_scale)), 0), image_width),
+        min(max(int(round(y_min * y_scale)), 0), image_height),
+        min(max(int(round(x_max * x_scale)), 0), image_width),
+        min(max(int(round(y_max * y_scale)), 0), image_height),
+    )
+
+    return DetectionResult(
+        label=detection.label,
+        confidence=detection.confidence,
+        bbox=scaled_bbox,
+        pixel_area=max(
+            (scaled_bbox[2] - scaled_bbox[0]) * (scaled_bbox[3] - scaled_bbox[1]),
+            0,
+        ),
+        color=detection.color or _SIMULATED_COLORS.get(detection.label),
     )
 
 

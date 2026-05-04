@@ -10,7 +10,7 @@ from PIL import Image, ImageOps
 
 MODEL_NAME = "nvidia/segformer-b2-finetuned-ade-512-512"
 MODEL_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "huggingface"
-INFERENCE_MAX_SIDE = 2048
+INFERENCE_MAX_SIDE = 1024
 
 _TARGET_LABEL_ALIASES = {
     "building": ("building", "house", "skyscraper"),
